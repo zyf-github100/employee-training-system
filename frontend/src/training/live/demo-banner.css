@@ -1,0 +1,10 @@
+.demo-mode-banner {
+  padding: 10px 25px;
+  color: #855820;
+  background: #fff2d3;
+  font-size: 12px;
+}
+.demo-mode-banner a {
+  margin-left: 20px;
+  text-decoration: underline;
+}

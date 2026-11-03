@@ -1,0 +1,27 @@
+# ===== 依赖与构建产物 =====
+node_modules/
+dist/
+build/
+target/
+output/
+
+# ===== 运行时数据 / 日志 =====
+.data/
+*.log
+logs/
+
+# ===== IDE 与编辑器 =====
+.idea/
+.vscode/
+*.iml
+
+# ===== 系统与临时文件 =====
+~$*
+Thumbs.db
+.DS_Store
+
+# ===== 本地工具目录 =====
+.playwright-cli/
+
+# ===== 上游模板遗留的 git 备份（可手动删除） =====
+frontend/.git.upstream-backup/

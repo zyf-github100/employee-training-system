@@ -1,0 +1,5 @@
+.local/
+target/
+.env*
+!.env.example
+.data/

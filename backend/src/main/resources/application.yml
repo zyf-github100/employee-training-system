@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: zhixing-training-api
+  profiles:
+    default: local
+  jackson:
+    default-property-inclusion: non_null
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  servlet:
+    multipart:
+      max-file-size: ${TRAINING_UPLOAD_MAX_FILE_SIZE:200MB}
+      max-request-size: ${TRAINING_UPLOAD_MAX_REQUEST_SIZE:210MB}
+server:
+  port: ${SERVER_PORT:8081}
+  servlet:
+    context-path: /
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+zhixing:
+  public-web-url: ${TRAINING_PUBLIC_WEB_URL:}
+  jwt:
+    issuer: zhixing-api
+    audience: zhixing-web
+    access-minutes: ${JWT_ACCESS_MINUTES:15}
+    refresh-hours: ${JWT_REFRESH_HOURS:8}
+    secret: ${TRAINING_JWT_SECRET:}
+  cors-origins: ${TRAINING_CORS_ORIGINS:http://127.0.0.1:5173,http://localhost:5173}
+  storage:
+    root: ${TRAINING_STORAGE_ROOT:.data/uploads}

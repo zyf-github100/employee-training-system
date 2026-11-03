@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "node"],
+    "noEmit": true
+  },
+  "include": [
+    "src/training/**/*.ts",
+    "src/training/**/*.vue",
+    "src/connected/**/*.ts",
+    "src/connected/**/*.vue",
+    "src/components/core/text-effect/art-count-to/index.vue",
+    "vite.training.config.ts"
+  ]
+}

@@ -1,0 +1,12 @@
+spring:
+  datasource:
+    url: ${TRAINING_DB_URL:jdbc:mysql://127.0.0.1:3306/zhixing_training?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${TRAINING_DB_USER:root}
+    password: ${TRAINING_DB_PASSWORD:}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: ${TRAINING_DB_POOL_SIZE:10}
+  flyway:
+    clean-disabled: true
+zhixing:
+  demo-seed: true

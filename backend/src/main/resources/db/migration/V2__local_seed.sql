@@ -1,0 +1,2 @@
+-- The API never stores a plaintext password. Demo accounts are inserted by LocalDemoSeeder,
+-- which uses the application BCrypt encoder and is disabled for the mysql profile.
