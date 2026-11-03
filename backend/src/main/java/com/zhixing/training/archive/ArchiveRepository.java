@@ -15,6 +15,12 @@ public class ArchiveRepository {
     private final com.zhixing.training.organization.DataScopeService scopes;
     public ArchiveRepository(JdbcTemplate jdbc,com.zhixing.training.organization.DataScopeService scopes) { this.jdbc = jdbc; this.scopes=scopes; }
 
+    @org.springframework.transaction.annotation.Transactional(readOnly = true)
+    public ArchiveDtos.EmployeeArchive adminEmployee(long actor, long target) {
+        scopes.requireUser(actor,target);
+        return employee(target);
+    }
+
     public ArchiveDtos.EmployeeArchive employee(long userId) {
         User user = jdbc.query("SELECT u.employee_no,u.name,d.name department_name FROM sys_user u LEFT JOIN org_department d ON d.id=u.department_id WHERE u.id=?", (rs,row) -> new User(rs.getString("employee_no"),rs.getString("name"),rs.getString("department_name")), userId).stream().findFirst().orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND,"USER_NOT_FOUND","用户不存在"));
         int enrolled = integer("SELECT COUNT(*) FROM course_enrollment WHERE user_id=?", userId);

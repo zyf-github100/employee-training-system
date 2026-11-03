@@ -33,6 +33,7 @@ class TrainingWorkflowTests {
     @Autowired LearningRepository learning;
     @Autowired CourseRepository courses;
     @Autowired PlanRepository plans;
+    @Autowired com.zhixing.training.certificate.CertificateRepository certificates;
     @Autowired MockMvc mvc;
     long admin, employee, other, paper, question, paperQuestion, course, chapter;
 
@@ -138,6 +139,12 @@ class TrainingWorkflowTests {
         String no=jdbc.queryForObject("SELECT certificate_no FROM training_certificate WHERE plan_id=? AND user_id=?",String.class,plan,employee);
         finishCourse(); plans.refreshProgress(plan,employee);
         assertThat(jdbc.queryForObject("SELECT certificate_no FROM training_certificate WHERE plan_id=? AND user_id=?",String.class,plan,employee)).isEqualTo(no);
+        var issued=certificates.employee(employee).stream().filter(c->c.planId()==plan).findFirst().orElseThrow();
+        assertThat(issued.verificationCode()).matches("[a-f0-9]{64}");
+        assertThat(issued.verificationUrl()).endsWith(issued.verificationCode());
+        certificates.revoke(admin,issued.id(),new com.zhixing.training.certificate.CertificateDtos.RevokeRequest("结业记录复核撤销",issued.version()));
+        plans.refreshProgress(plan,employee);
+        assertThat(certificates.verify(issued.verificationCode()).status()).isEqualTo("REVOKED");
     }
 
     @Test void optionalItemsDoNotBlockCompletionAndProgressCannotRegress() {

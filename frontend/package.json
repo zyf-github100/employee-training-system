@@ -12,6 +12,7 @@
     "typecheck": "vue-tsc --noEmit -p tsconfig.training.json",
     "test:training": "tsx scripts/training-domain-check.mts",
     "test:session": "tsx --test scripts/connected-session-check.mts",
+    "test:portal": "tsx --test scripts/portal-state-check.mts",
     "preview": "vite preview --config vite.training.config.ts --host 127.0.0.1 --port 4173",
     "serve": "vite preview",
     "lint": "eslint",

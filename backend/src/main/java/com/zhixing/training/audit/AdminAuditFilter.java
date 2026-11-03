@@ -17,6 +17,7 @@ public class AdminAuditFilter extends OncePerRequestFilter {
         String path=request.getRequestURI();
         if(path.equals("/api/v1/auth/account-setup"))return !request.getMethod().equals("POST");
         if(path.startsWith("/api/v1/admin/employee-imports/")&&path.endsWith("/report"))return false;
+        if(path.startsWith("/api/v1/admin/certificates/")&&path.endsWith("/pdf"))return false;
         return !path.startsWith("/api/v1/admin/") || Set.of("GET","HEAD","OPTIONS").contains(request.getMethod());
     }
     @Override protected void doFilterInternal(HttpServletRequest request,HttpServletResponse response,FilterChain chain)throws ServletException,IOException {

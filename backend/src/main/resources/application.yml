@@ -25,6 +25,7 @@ management:
     health:
       show-details: never
 zhixing:
+  certificate-time-zone: ${TRAINING_CERTIFICATE_TIME_ZONE:UTC}
   public-web-url: ${TRAINING_PUBLIC_WEB_URL:}
   jwt:
     issuer: zhixing-api

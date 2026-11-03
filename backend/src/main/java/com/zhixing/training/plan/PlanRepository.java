@@ -22,7 +22,8 @@ import java.util.Set;
 public class PlanRepository {
     private final JdbcTemplate jdbc;
     private final com.zhixing.training.organization.DataScopeService scopes;
-    public PlanRepository(JdbcTemplate jdbc, com.zhixing.training.organization.DataScopeService scopes) { this.jdbc = jdbc; this.scopes = scopes; }
+    private final com.zhixing.training.certificate.CertificateRepository certificates;
+    public PlanRepository(JdbcTemplate jdbc, com.zhixing.training.organization.DataScopeService scopes, com.zhixing.training.certificate.CertificateRepository certificates) { this.jdbc = jdbc; this.scopes = scopes; this.certificates = certificates; }
 
     public List<PlanDtos.PlanView> list(boolean admin, long userId) {
         String visibility = admin ? (scopes.resolve(userId).all() ? "" : " AND tp.created_by="+userId) : " AND tp.status='PUBLISHED' AND EXISTS(SELECT 1 FROM training_assignment ta WHERE ta.plan_id=tp.id AND ta.user_id=?)";
@@ -106,7 +107,7 @@ public class PlanRepository {
         int total=required.size(), done=(int)required.stream().filter(item->item.progressPercent()==100).count();
         int percent=total==0?0:done*100/total;
         jdbc.update("UPDATE training_assignment SET progress_percent=?,status=?,started_at=COALESCE(started_at,CURRENT_TIMESTAMP),completed_at=CASE WHEN ?=100 THEN COALESCE(completed_at,CURRENT_TIMESTAMP) ELSE NULL END WHERE plan_id=? AND user_id=?",percent,percent==100?"COMPLETED":"IN_PROGRESS",percent,id,userId);
-        if(percent==100) jdbc.update("INSERT INTO training_certificate(certificate_no,plan_id,user_id,title) SELECT CONCAT('ZHX-',YEAR(CURRENT_DATE),'-',tp.id,'-',?),tp.id,?,CONCAT(tp.title,'结业证书') FROM training_plan tp WHERE tp.id=? ON DUPLICATE KEY UPDATE certificate_no=training_certificate.certificate_no",userId,userId,id);
+        if(percent==100) certificates.issue(id,userId);
         return detail(id,false,userId).orElseThrow();
     }
 

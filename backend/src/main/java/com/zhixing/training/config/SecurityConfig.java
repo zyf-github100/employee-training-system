@@ -82,6 +82,7 @@ public class SecurityConfig {
                         .accessDeniedHandler((req, res, ex) -> errors.write(res,403,"FORBIDDEN","无权操作或请求验证失败")))
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/v1/auth/csrf", "/api/v1/auth/login", "/api/v1/auth/refresh", "/api/v1/auth/logout", "/api/v1/auth/account-setup", "/actuator/health", "/error").permitAll()
+                        .requestMatchers(HttpMethod.GET,"/api/v1/certificates/verify").permitAll()
                         .requestMatchers("/api/v1/employee/**").hasAnyRole("EMPLOYEE", "ADMIN")
                         .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                         .requestMatchers("/api/v1/resources/**").authenticated()

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-  import { onMounted, reactive, ref } from 'vue'
+  import { computed, onMounted, reactive, ref, watch } from 'vue'
+  import { ElMessageBox } from 'element-plus'
   import { RouterLink } from 'vue-router'
   import { ApiError, api, type Course, type Exam, type PlanDetail, type TrainingPlan } from './api'
 
@@ -11,6 +12,27 @@
     Array<{ id: number; employeeNo: string; name: string; departmentName?: string }>
   >([])
   const selectedEmployees = ref<number[]>([])
+  const employeeSearch = ref(''),
+    employeePage = ref(1)
+  const filteredEmployees = computed(() => {
+    const q = employeeSearch.value.trim().toLowerCase()
+    return employees.value.filter((e) =>
+      `${e.name} ${e.employeeNo} ${e.departmentName ?? ''}`.toLowerCase().includes(q)
+    )
+  })
+  const pageEmployees = computed(() =>
+    filteredEmployees.value.slice((employeePage.value - 1) * 20, employeePage.value * 20)
+  )
+  watch(employeeSearch, () => (employeePage.value = 1))
+  function selectPage() {
+    selectedEmployees.value = [
+      ...new Set([...selectedEmployees.value, ...pageEmployees.value.map((e) => e.id)])
+    ]
+  }
+  function unselectPage() {
+    const ids = new Set(pageEmployees.value.map((e) => e.id))
+    selectedEmployees.value = selectedEmployees.value.filter((id) => !ids.has(id))
+  }
   const selected = ref<PlanDetail | null>(null)
   const loading = ref(false)
   const error = ref('')
@@ -43,7 +65,11 @@
       plans.value = await api.plans(props.admin)
       if (props.admin) {
         employees.value = await api.eligibleEmployees()
-        courses.value = (await api.courses(true)).list
+        const first = await api.courses(false, 1, 100)
+        const published = [...first.list]
+        for (let page = 2; (page - 1) * 100 < first.total; page++)
+          published.push(...(await api.courses(false, page, 100)).list)
+        courses.value = published
         exams.value = await api.exams(true)
         form.courseId ||= courses.value.find((item) => item.status === 'PUBLISHED')?.id ?? 0
         form.examId ||= exams.value.find((item) => item.status === 'PUBLISHED')?.id ?? 0
@@ -80,8 +106,18 @@
     }
   }
   async function publish(plan: TrainingPlan) {
+    if (loading.value) return
     if (!selectedEmployees.value.length) {
       error.value = '请在目标员工名单中选择至少一名员工'
+      return
+    }
+    try {
+      await ElMessageBox.confirm(
+        `将“${plan.title}”发布给已选择的 ${selectedEmployees.value.length} 名员工，发布后名单固化。`,
+        '发布培训计划',
+        { confirmButtonText: '发布并分配', cancelButtonText: '取消', type: 'warning' }
+      )
+    } catch {
       return
     }
     loading.value = true
@@ -145,12 +181,49 @@
     <div v-if="admin" class="panel roster-selector"
       ><h2>发布目标名单</h2
       ><p class="muted">发布草稿前选择目标员工，发布后名单固化；重复选择不会重复分配。</p
-      ><label v-for="employee in employees" :key="employee.id" class="option-line"
-        ><input v-model="selectedEmployees" type="checkbox" :value="employee.id" />{{
-          employee.name
-        }}
-        · {{ employee.employeeNo }} · {{ employee.departmentName || '未分配部门' }}</label
-      ><p>已选择 {{ selectedEmployees.length }} 人</p></div
+      ><form class="toolbar admin-toolbar" @submit.prevent
+        ><input
+          v-model="employeeSearch"
+          aria-label="检索参训员工"
+          placeholder="搜索姓名、工号或部门"
+        /><button type="button" class="text-button" :disabled="loading" @click="selectPage"
+          >选择本页</button
+        ><button type="button" class="text-button" :disabled="loading" @click="unselectPage"
+          >取消本页</button
+        ><button
+          type="button"
+          class="text-button"
+          :disabled="loading"
+          @click="selectedEmployees = []"
+          >清空选择</button
+        ></form
+      ><label v-for="employee in pageEmployees" :key="employee.id" class="option-line"
+        ><input
+          v-model="selectedEmployees"
+          type="checkbox"
+          :value="employee.id"
+          :disabled="loading"
+        />{{ employee.name }} · {{ employee.employeeNo }} ·
+        {{ employee.departmentName || '未分配部门' }}</label
+      ><p v-if="!filteredEmployees.length" class="muted">没有符合条件的可分配员工。</p
+      ><div class="live-pagination"
+        ><button
+          class="outline-button"
+          :disabled="employeePage <= 1 || loading"
+          @click="employeePage--"
+          >上一页</button
+        ><span
+          >{{ employeePage }} / {{ Math.max(1, Math.ceil(filteredEmployees.length / 20)) }}</span
+        ><button
+          class="outline-button"
+          :disabled="employeePage * 20 >= filteredEmployees.length || loading"
+          @click="employeePage++"
+          >下一页</button
+        ></div
+      ><p
+        >已选择 {{ selectedEmployees.length }} 人 · 筛选结果
+        {{ filteredEmployees.length }} 人，跨页保留选择</p
+      ></div
     >
     <template v-if="!loading || plans.length">
       <div class="plan-list"
@@ -160,25 +233,31 @@
               >{{ plan.category }} · {{ plan.startDate }} 至 {{ plan.endDate }}</span
             ><h3>{{ plan.title }}</h3
             ><p>{{ plan.description || '暂无计划说明' }}</p
-            ><div class="progress-track"><i :style="{ width: `${plan.progressPercent}%` }"></i></div
-            ><small
+            ><div v-if="!admin" class="progress-track"
+              ><i :style="{ width: `${plan.progressPercent}%` }"></i></div
+            ><small v-if="!admin"
               >{{ plan.completedItems }} / {{ plan.totalItems }} 必修项完成 ·
               {{ plan.progressPercent }}%</small
+            ><small v-else
+              >{{ plan.assigneeCount }} 名参训员工 · {{ plan.totalItems }} 项必修要求</small
             ></div
           ><div class="plan-card-actions"
             ><span class="status-pill">{{
               plan.status === 'PUBLISHED'
-                ? plan.progressPercent === 100
-                  ? '已完成'
-                  : '进行中'
+                ? admin
+                  ? '已发布'
+                  : plan.progressPercent === 100
+                    ? '已完成'
+                    : '进行中'
                 : '草稿'
             }}</span
             ><button
               v-if="admin && plan.status === 'DRAFT'"
               class="text-button"
+              :disabled="loading"
               @click="publish(plan)"
               >发布</button
-            ><button class="text-button" @click="open(plan)">查看</button
+            ><button class="text-button" :disabled="loading" @click="open(plan)">查看</button
             ><button v-if="!admin" class="outline-button compact" @click="refreshProgress(plan)"
               >刷新进度</button
             ></div
@@ -226,7 +305,8 @@
         ><h2>{{ selected.plan.title }}</h2
         ><button class="text-button" @click="selected = null">关闭</button></div
       ><p class="muted"
-        >{{ selected.plan.description }} · {{ selected.plan.progressPercent }}% 完成</p
+        >{{ selected.plan.description
+        }}<template v-if="!admin"> · {{ selected.plan.progressPercent }}% 完成</template></p
       ><div class="plan-items"
         ><article v-for="item in selected.items" :key="`${item.itemType}-${item.itemId}`"
           ><span class="status-pill">{{ item.itemType === 'COURSE' ? '课程' : '考试' }}</span
@@ -237,8 +317,10 @@
             :to="item.itemType === 'COURSE' ? `/learn/${item.itemId}` : '/exams'"
             >{{ item.itemType === 'COURSE' ? '前往学习' : '前往考试' }}</router-link
           ><small
-            >{{ item.required ? '必修' : '选修' }} ·
-            {{ item.status === 'COMPLETED' ? '已完成' : `${item.progressPercent}%` }}</small
+            >{{ item.required ? '必修' : '选修'
+            }}<template v-if="!admin">
+              · {{ item.status === 'COMPLETED' ? '已完成' : `${item.progressPercent}%` }}</template
+            ></small
           ></article
         ></div
       ></div

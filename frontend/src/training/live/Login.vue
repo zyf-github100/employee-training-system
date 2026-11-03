@@ -14,15 +14,18 @@
     error.value = ''
     sessionError.value = ''
     try {
-      await login(form.employeeNo.trim(), form.password)
+      const user = await login(form.employeeNo.trim(), form.password)
       form.password = ''
       const next =
         typeof route.query.next === 'string' &&
+        route.query.next !== '/dashboard' &&
         route.query.next.startsWith('/') &&
         !route.query.next.startsWith('//') &&
         !route.query.next.startsWith('/login')
           ? route.query.next
-          : '/dashboard'
+          : user.roleCode === 'ADMIN'
+            ? '/admin/dashboard'
+            : '/dashboard'
       await router.replace(next)
     } catch (e) {
       error.value = errorMessage(e)

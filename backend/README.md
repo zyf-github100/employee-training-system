@@ -1,3 +1,28 @@
+# 反馈、公告与平台设置（2026-11-02）
+
+Flyway V14 增加平台设置、反馈、公告和收件人。已有数据库通过正常 Flyway migrate 升级，不运行 clean。累计 71 项测试通过（新增 11 项真实 MySQL 测试）。
+
+| 方法 | 路径 | 行为 |
+| --- | --- | --- |
+| GET/POST | `/api/v1/employee/feedback` | 本人分页查询/提交反馈，UUID 请求编号防重 |
+| GET | `/api/v1/admin/feedback` | 当前人员数据范围内分页筛选 |
+| PUT | `/api/v1/admin/feedback/{id}/reply` | 回复或更新回复，须携带当前 version |
+| GET | `/api/v1/employee/announcements` | 本人收件列表，仅显示有效公告 |
+| GET | `/api/v1/employee/announcements/unread-count` | 本人未读数量 |
+| POST | `/api/v1/employee/announcements/{id}/read` | 本人标为已读，重试不改变首次阅读时间 |
+| GET/POST | `/api/v1/admin/announcements` | 可管理公告列表/向明确员工名单发布 |
+| POST | `/api/v1/admin/announcements/{id}/withdraw` | 按创建者/ALL 内容权限撤回，携带 version |
+| GET | `/api/v1/employee/platform` | 所有已登录账号读取企业和培训联系信息 |
+| GET/PUT | `/api/v1/admin/settings` | 管理员读取，超级管理员按 version 保存 |
+
+反馈筛选为 `pageNo/pageSize/status/keyword`，状态支持空、`PENDING`、`REPLIED`。反馈请求为 `requestId/title/type/content`，类型为课程建议、课程提问、学习反馈、系统问题。公告请求为 `requestId/title/category/content/employeeIds`，分类为培训通知、课程上新、平台公告，名单 1–5000 人、去重、固化；当前范围外、停用、未激活或非员工账号会使整次发布失败。相同作者和 UUID 的相同规范化内容重试返回原记录，复用编号修改内容返回 409。
+
+平台设置字段为 `companyName/contactName/contactEmail/unreadReminders/version`，不存凭据、不改变账号姓名或权限、不接入邮件/短信发送。管理写操作沿用现有审计；列表与修改均从数据库读取权限。详细验证及范围限制见 `../frontend/docs/communication-acceptance-2026-11-02.md`。
+
+# 管理端页面配套接口（2026-11-02）
+
+主入口管理员工作台现为 `/#/admin/dashboard`，旧 `connected.html` 兼容跳转。新增 `GET /api/v1/admin/employees/{id}/archive`，按数据库实时人员数据范围校验后返回目标员工的培训档案；读取在只读事务中完成。员工、匿名及范围外账号不能调用。累计 60 项后端测试通过，页面与浏览器证据见 `../frontend/docs/admin-workspace-acceptance-2026-11-02.md`。
+
 # 组织批量更新（2026-10-09）
 
 V13 增加 `org_department.leader_user_id` 和 `organization_batch`。新增接口：
@@ -197,3 +222,7 @@ Flyway V12 增加导入预览、批次成员和一次性设置密码令牌。管
 生产部署应设置 `TRAINING_PUBLIC_WEB_URL=https://training.example.com`，用于激活名单内的完整地址。不设置时取受信 CORS Origin 或第一个配置的 CORS 地址。地址中的设置码放在 `#` 后的片段中，员工页面读取后立即清除地址栏中的设置码；下载响应使用 no-store。所有写接口仍需 CSRF，审计不保存密码和设置码正文。
 
 本轮不发送邮件或短信，管理员须逐人交付链接。批次原始字段与已消耗令牌暂无自动清理策略；上线前需结合人员信息保留要求配置归档/清理和导入频率限制。已有单个账号的 initialPassword 创建流程继续保留，不代表旧账号已统一强制首次改密。
+
+## 正式证书（2026-11-02）
+
+V15 接入中文 PDF、可点击验真二维码、公开验真、按权限撤销与审计，并固化签发快照。配置、接口与历史升级说明见 [证书交付与运维](docs/certificates.md)。生产签发前配置 `TRAINING_PUBLIC_WEB_URL`；PDF 日期时区通过 `TRAINING_CERTIFICATE_TIME_ZONE` 设置。

@@ -54,6 +54,20 @@ class OrganizationAccessTests {
         long course=jdbc.queryForObject("SELECT id FROM course WHERE status='PUBLISHED' ORDER BY id LIMIT 1",Long.class);
         return plans.create(new PlanDtos.PlanRequest("Scoped "+tag,"Scope regression","QA",LocalDate.now(),LocalDate.now().plusDays(3),List.of(new PlanDtos.CourseItemRequest(course,true)),List.of()),actor);
     }
+    @Test void adminArchivesUseCurrentPersonnelScope() throws Exception {
+        mvc.perform(get("/api/v1/admin/employees/"+descendant+"/archive").with(actor(manager,"ADMIN")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.employeeNo").value("O"+tag+"D"))
+                .andExpect(jsonPath("$.data.courses.enrolled").value(0));
+        mvc.perform(get("/api/v1/admin/employees/"+foreign+"/archive").with(actor(manager,"ADMIN"))).andExpect(status().isForbidden());
+        jdbc.update("UPDATE sys_user SET data_scope='SELF' WHERE id=?",manager);
+        mvc.perform(get("/api/v1/admin/employees/"+local+"/archive").with(actor(manager,"ADMIN"))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/admin/employees/"+manager+"/archive").with(actor(manager,"ADMIN"))).andExpect(status().isOk());
+        mvc.perform(get("/api/v1/admin/employees/"+foreign+"/archive").with(actor(root,"ADMIN"))).andExpect(status().isOk());
+    }
+    @Test void employeeAndAnonymousCannotReadManagementArchives() throws Exception {
+        mvc.perform(get("/api/v1/admin/employees/"+local+"/archive").with(actor(local,"EMPLOYEE"))).andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/admin/employees/"+local+"/archive")).andExpect(status().isUnauthorized());
+    }
     @Test void departmentTreeRejectsCyclesStaleEditsAndInvalidDisabling() {
         assertThatThrownBy(()->org.saveDepartment(root,a,new DepartmentRequest(child,"QA_"+tag+"A","Cycle","ACTIVE",0,0))).isInstanceOf(ApiException.class);
         assertThatThrownBy(()->org.saveDepartment(root,b,new DepartmentRequest(null,"QA_"+tag+"B","Busy","DISABLED",0,0))).isInstanceOf(ApiException.class);

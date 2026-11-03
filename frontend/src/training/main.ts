@@ -11,6 +11,9 @@ import './styles.css'
 import './experience.css'
 import './management.css'
 import './live/live.css'
+import './live/admin/admin.css'
+import './live/services.css'
+import './live/certificates.css'
 
 const app = createApp(App)
 app.use(createPinia()).use(router).use(ElLoading)

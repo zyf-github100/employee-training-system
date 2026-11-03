@@ -14,29 +14,42 @@
   const error = ref('')
   const chartEl = ref<HTMLElement | null>(null)
   let chart: import('echarts/core').ECharts | null = null
+  let chartObserver: ResizeObserver | null = null
   function apiMessage(e: unknown) {
     error.value = e instanceof ApiError ? e.message : '档案分析接口暂时不可用，请确认后端已启动'
   }
   async function load() {
     loading.value = true
     error.value = ''
+    chartObserver?.disconnect()
+    chart?.dispose()
+    chart = null
     try {
       if (props.admin) {
         analytics.value = await api.analytics()
-        loading.value = false
-        await nextTick()
-        await renderChart()
       } else archive.value = await api.employeeArchive()
     } catch (e) {
       apiMessage(e)
     } finally {
       loading.value = false
     }
+    if (props.admin && analytics.value) {
+      await nextTick()
+      try {
+        await renderChart()
+      } catch (e) {
+        apiMessage(e)
+      }
+    }
   }
   async function renderChart() {
     if (!chartEl.value || !analytics.value) return
     const echarts = await import('echarts/core')
-    if (!chart) chart = echarts.init(chartEl.value)
+    if (!chart) {
+      chart = echarts.init(chartEl.value)
+      chartObserver = new ResizeObserver(() => chart?.resize())
+      chartObserver.observe(chartEl.value)
+    }
     chart.setOption({
       grid: { left: 40, right: 20, top: 25, bottom: 30 },
       tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value}%` },
@@ -62,6 +75,7 @@
   onMounted(load)
   onUnmounted(() => {
     window.removeEventListener('resize', resizeChart)
+    chartObserver?.disconnect()
     chart?.dispose()
     chart = null
   })

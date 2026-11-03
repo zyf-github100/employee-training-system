@@ -288,9 +288,68 @@ export type Certificate = {
   issuedAt: string
   revokedAt?: string
   status: string
+  issuerName: string
+  completedAt: string
+  verificationCode: string
+  verificationUrl: string | null
+  version: number
+  revocationReason?: string
+  revokedByName?: string
+  legacySnapshot: boolean
+}
+export type CertificateVerification = {
+  certificateNo: string
+  recipientName: string
+  employeeNoMasked: string
+  planTitle: string
+  issuerName: string
+  completedAt: string
+  issuedAt: string
+  status: 'VALID' | 'REVOKED'
+  revokedAt?: string
+  legacySnapshot: boolean
+  checkedAt: string
 }
 type Envelope<T> = { code: string; message: string; data: T; traceId: string }
 export type Page<T> = { list: T[]; pageNo: number; pageSize: number; total: number }
+export type FeedbackRecord = {
+  id: number
+  title: string
+  type: string
+  content: string
+  status: 'PENDING' | 'REPLIED'
+  userId: number
+  employeeNo: string
+  authorName: string
+  departmentName?: string
+  reply?: string
+  repliedByName?: string
+  createdAt: string
+  repliedAt?: string
+  version: number
+}
+export type Announcement = {
+  id: number
+  title: string
+  category: string
+  content: string
+  status: 'PUBLISHED' | 'WITHDRAWN'
+  publisherName: string
+  publishedAt: string
+  withdrawnAt?: string
+  readAt?: string
+  recipientCount: number
+  readCount: number
+  version: number
+}
+export type PlatformSettings = {
+  companyName: string
+  contactName: string
+  contactEmail: string
+  unreadReminders: boolean
+  version: number
+  updatedAt: string
+}
 
 export class ApiError extends Error {
   constructor(
@@ -307,6 +366,12 @@ export class ApiError extends Error {
 let csrfToken = ''
 let accessToken = ''
 let refreshPromise: Promise<void> | null = null
+let sessionGeneration = 0
+
+function ensureSession(generation: number) {
+  if (generation !== sessionGeneration)
+    throw new ApiError(401, 'SESSION_CHANGED', '登录状态已变化，请在当前账号下重新操作')
+}
 
 async function parse<T>(response: Response): Promise<T> {
   const body = (await response.json().catch(() => ({}))) as Partial<Envelope<T>>
@@ -321,8 +386,11 @@ async function parse<T>(response: Response): Promise<T> {
 }
 
 export async function csrf(): Promise<string> {
+  const generation = sessionGeneration
   const response = await fetch('/api/v1/auth/csrf', { credentials: 'include' })
-  csrfToken = await parse<string>(response)
+  const token = await parse<string>(response)
+  ensureSession(generation)
+  csrfToken = token
   return csrfToken
 }
 
@@ -331,8 +399,10 @@ function mutating(method: string) {
 }
 
 async function raw<T>(path: string, init: RequestInit = {}, retry = true): Promise<T> {
+  const generation = sessionGeneration
   const method = (init.method ?? 'GET').toUpperCase()
   if (mutating(method) && !csrfToken) await csrf()
+  ensureSession(generation)
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
   if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type'))
@@ -346,6 +416,7 @@ async function raw<T>(path: string, init: RequestInit = {}, retry = true): Promi
   )
     headers.set('Authorization', `Bearer ${accessToken}`)
   const response = await fetch(path, { ...init, headers, credentials: 'include' })
+  ensureSession(generation)
   if (
     response.status === 401 &&
     retry &&
@@ -353,19 +424,26 @@ async function raw<T>(path: string, init: RequestInit = {}, retry = true): Promi
     path !== '/api/v1/auth/refresh'
   ) {
     await refresh()
+    ensureSession(generation)
     return raw<T>(path, init, false)
   }
-  return parse<T>(response)
+  const result = await parse<T>(response)
+  ensureSession(generation)
+  return result
 }
 
 async function binary(path: string, method: 'GET' | 'POST' = 'GET', retry = true): Promise<Blob> {
+  const generation = sessionGeneration
   if (mutating(method) && !csrfToken) await csrf()
+  ensureSession(generation)
   const headers = new Headers({ Accept: '*/*' })
   if (mutating(method)) headers.set('X-XSRF-TOKEN', csrfToken)
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
   const response = await fetch(path, { method, headers, credentials: 'include' })
+  ensureSession(generation)
   if (response.status === 401 && retry) {
     await refresh()
+    ensureSession(generation)
     return binary(path, method, false)
   }
   if (!response.ok) {
@@ -377,12 +455,16 @@ async function binary(path: string, method: 'GET' | 'POST' = 'GET', retry = true
       body.traceId
     )
   }
-  return response.blob()
+  const blob = await response.blob()
+  ensureSession(generation)
+  return blob
 }
 
 export async function refresh(): Promise<void> {
   if (!refreshPromise) {
-    refreshPromise = (async () => {
+    const generation = sessionGeneration
+    const account = currentUser.value?.id
+    const pending = (async () => {
       // Cookie-backed CSRF state may rotate while this tab keeps an access token.
       // Fetch its current value before the anonymous, cookie-authenticated refresh.
       await csrf()
@@ -391,46 +473,120 @@ export async function refresh(): Promise<void> {
         { method: 'POST' },
         false
       )
+      ensureSession(generation)
+      if (account !== undefined && account !== data.user.id) {
+        clearSession()
+        throw new ApiError(401, 'SESSION_CHANGED', '登录账号已在其他页面切换，请重新登录')
+      }
       accessToken = data.accessToken
       currentUser.value = data.user
       await csrf()
     })()
       .catch((error: unknown) => {
-        if (error instanceof ApiError && error.status === 401) clearSession()
+        if (generation === sessionGeneration && error instanceof ApiError && error.status === 401)
+          clearSession()
         throw error
       })
       .finally(() => {
-        refreshPromise = null
+        if (refreshPromise === pending) refreshPromise = null
       })
+    refreshPromise = pending
   }
   return refreshPromise
 }
 
 export async function login(employeeNo: string, password: string) {
+  clearSession()
+  const generation = sessionGeneration
   await csrf()
   const data = await raw<{ accessToken: string; user: User }>(
     '/api/v1/auth/login',
     { method: 'POST', body: JSON.stringify({ employeeNo, password }) },
     false
   )
+  ensureSession(generation)
   accessToken = data.accessToken
   currentUser.value = data.user
   await csrf()
+  ensureSession(generation)
   return data.user
 }
 
 export async function logout() {
+  sessionGeneration++
+  refreshPromise = null
   await raw<void>('/api/v1/auth/logout', { method: 'POST' })
   clearSession()
 }
 
 export function clearSession() {
+  sessionGeneration++
+  refreshPromise = null
   accessToken = ''
   csrfToken = ''
   currentUser.value = null
 }
 export const currentUser = shallowRef<User | null>(null)
 export const api = {
+  certificatePage: (admin: boolean, pageNo = 1, keyword = '', status = '') =>
+    raw<Page<Certificate>>(
+      `/api/v1/${admin ? 'admin' : 'employee'}/certificates/page?${new URLSearchParams({ pageNo: String(pageNo), keyword, status })}`
+    ),
+  certificatePdf: (admin: boolean, id: number) =>
+    binary(`/api/v1/${admin ? 'admin' : 'employee'}/certificates/${id}/pdf`),
+  revokeCertificate: (id: number, reason: string, version: number) =>
+    raw<Certificate>(`/api/v1/admin/certificates/${id}/revoke`, {
+      method: 'POST',
+      body: JSON.stringify({ reason, version })
+    }),
+  verifyCertificate: (code: string) =>
+    fetch(`/api/v1/certificates/verify?code=${encodeURIComponent(code)}`, {
+      credentials: 'omit',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+      headers: { Accept: 'application/json' }
+    }).then(parse<CertificateVerification>),
+  platform: () => raw<PlatformSettings>('/api/v1/employee/platform'),
+  settings: () => raw<PlatformSettings>('/api/v1/admin/settings'),
+  saveSettings: (body: Omit<PlatformSettings, 'updatedAt'>) =>
+    raw<PlatformSettings>('/api/v1/admin/settings', { method: 'PUT', body: JSON.stringify(body) }),
+  feedback: (admin: boolean, pageNo = 1, status = '', keyword = '') =>
+    raw<Page<FeedbackRecord>>(
+      `/api/v1/${admin ? 'admin' : 'employee'}/feedback?${new URLSearchParams({ pageNo: String(pageNo), status, keyword })}`
+    ),
+  submitFeedback: (body: { requestId: string; title: string; type: string; content: string }) =>
+    raw<FeedbackRecord>('/api/v1/employee/feedback', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  replyFeedback: (id: number, reply: string, version: number) =>
+    raw<FeedbackRecord>(`/api/v1/admin/feedback/${id}/reply`, {
+      method: 'PUT',
+      body: JSON.stringify({ reply, version })
+    }),
+  announcements: (admin: boolean, pageNo = 1) =>
+    raw<Page<Announcement>>(
+      `/api/v1/${admin ? 'admin' : 'employee'}/announcements?pageNo=${pageNo}`
+    ),
+  unreadAnnouncements: () => raw<number>('/api/v1/employee/announcements/unread-count'),
+  readAnnouncement: (id: number) =>
+    raw<Announcement>(`/api/v1/employee/announcements/${id}/read`, { method: 'POST' }),
+  publishAnnouncement: (body: {
+    requestId: string
+    title: string
+    category: string
+    content: string
+    employeeIds: number[]
+  }) =>
+    raw<Announcement>('/api/v1/admin/announcements', {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  withdrawAnnouncement: (id: number, version: number) =>
+    raw<Announcement>(`/api/v1/admin/announcements/${id}/withdraw`, {
+      method: 'POST',
+      body: JSON.stringify({ version })
+    }),
   importTemplate: () => binary('/api/v1/admin/employee-imports/template'),
   importPreview: (file: File) => {
     const body = new FormData()
@@ -517,6 +673,14 @@ export const api = {
     raw<Course>('/api/v1/admin/courses', { method: 'POST', body: JSON.stringify(body) }),
   updateCourse: (id: number, body: object) =>
     raw<Course>(`/api/v1/admin/courses/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  saveChapter: (courseId: number, chapterId: number | null, body: object) =>
+    raw<CourseDetail>(
+      `/api/v1/admin/courses/${courseId}/chapters${chapterId ? `/${chapterId}` : ''}`,
+      {
+        method: chapterId ? 'PUT' : 'POST',
+        body: JSON.stringify(body)
+      }
+    ),
   courseDetail: (id: number, admin = false) =>
     raw<CourseDetail>(`/api/v1/${admin ? 'admin' : 'employee'}/courses/${id}`),
   enroll: (id: number) =>
@@ -562,6 +726,11 @@ export const api = {
     ),
   createQuestion: (body: object) =>
     raw<BankQuestion>('/api/v1/admin/questions', { method: 'POST', body: JSON.stringify(body) }),
+  updateQuestion: (id: number, body: object) =>
+    raw<BankQuestion>(`/api/v1/admin/questions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(body)
+    }),
   exams: (admin = false) => raw<Exam[]>(`/api/v1/${admin ? 'admin' : 'employee'}/exams`),
   examDetail: (id: number, admin = false) =>
     raw<ExamDetail>(`/api/v1/${admin ? 'admin' : 'employee'}/exams/${id}`),
@@ -601,6 +770,8 @@ export const api = {
   refreshPlan: (id: number) =>
     raw<PlanDetail>(`/api/v1/employee/plans/${id}/progress`, { method: 'POST', body: '{}' }),
   employeeArchive: () => raw<EmployeeArchive>('/api/v1/employee/archive'),
+  adminEmployeeArchive: (id: number) =>
+    raw<EmployeeArchive>(`/api/v1/admin/employees/${id}/archive`),
   analytics: () => raw<AnalyticsSummary>('/api/v1/admin/analytics'),
   certificates: (admin = false) =>
     raw<Certificate[]>(`/api/v1/${admin ? 'admin' : 'employee'}/certificates`)
