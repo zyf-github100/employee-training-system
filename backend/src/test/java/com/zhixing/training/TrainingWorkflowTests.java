@@ -240,4 +240,42 @@ class TrainingWorkflowTests {
         assertThatThrownBy(() -> learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,10,true,false))).isInstanceOf(ApiException.class);
         assertThat(learning.progress(course,employee)).isEmpty();
     }
+
+    @Test void draftPlanCanBeEditedBeforePublish() {
+        long id=plans.create(new PlanDtos.PlanRequest("QA draft","Before","QA",LocalDate.now(),LocalDate.now().plusDays(2),List.of(new PlanDtos.CourseItemRequest(course,true)),List.of()),admin);
+        var updated=plans.update(id,new PlanDtos.PlanUpdateRequest("QA renamed","After","QA",LocalDate.now(),LocalDate.now().plusDays(5),List.of(new PlanDtos.CourseItemRequest(course,true)),List.of(new PlanDtos.ExamItemRequest(paper,false)),0),admin);
+        assertThat(updated.plan().title()).isEqualTo("QA renamed");
+        assertThat(updated.plan().endDate()).isEqualTo(LocalDate.now().plusDays(5));
+        assertThat(updated.items()).hasSize(2);
+        assertThat(updated.plan().version()).isEqualTo(1);
+        assertThatThrownBy(() -> plans.update(id,new PlanDtos.PlanUpdateRequest("stale","x","QA",null,null,List.of(new PlanDtos.CourseItemRequest(course,true)),List.of(),0),admin)).isInstanceOf(ApiException.class);
+    }
+
+    @Test void publishedPlanCannotBeEdited() {
+        long id=plan(true);
+        long version=plans.detail(id,true,admin).orElseThrow().plan().version();
+        assertThatThrownBy(() -> plans.update(id,new PlanDtos.PlanUpdateRequest("QA edit","x","QA",null,null,List.of(new PlanDtos.CourseItemRequest(course,true)),List.of(),version),admin)).isInstanceOf(ApiException.class);
+    }
+
+    @Test void terminatedPlanStopsProgressAndRemainsVisibleToAssignee() {
+        long id=plans.create(new PlanDtos.PlanRequest("QA terminate","x","QA",LocalDate.now(),LocalDate.now().plusDays(2),List.of(new PlanDtos.CourseItemRequest(course,true)),List.of()),admin);
+        plans.publish(id,admin,List.of(employee));
+        long version=plans.detail(id,true,admin).orElseThrow().plan().version();
+        var terminated=plans.terminate(id,new PlanDtos.TerminateRequest("需求取消",version),admin);
+        assertThat(terminated.plan().status()).isEqualTo("TERMINATED");
+        assertThat(terminated.plan().terminationReason()).isEqualTo("需求取消");
+        assertThat(plans.detail(id,false,employee)).isPresent();
+        assertThatThrownBy(() -> plans.refreshProgress(id,employee)).isInstanceOf(ApiException.class);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM training_certificate WHERE plan_id=?",Integer.class,id)).isZero();
+    }
+
+    @Test void publishedPlanCanBeExtendedButNotShortened() {
+        long id=plan(true);
+        long version=plans.detail(id,true,admin).orElseThrow().plan().version();
+        LocalDate extendedEnd=LocalDate.now().plusDays(10);
+        var extended=plans.extend(id,new PlanDtos.ExtendRequest(extendedEnd,version),admin);
+        assertThat(extended.plan().endDate()).isEqualTo(extendedEnd);
+        assertThatThrownBy(() -> plans.extend(id,new PlanDtos.ExtendRequest(LocalDate.now().plusDays(1),extended.plan().version()),admin)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> plans.extend(id,new PlanDtos.ExtendRequest(extendedEnd.plusDays(1),version),admin)).isInstanceOf(ApiException.class);
+    }
 }

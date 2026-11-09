@@ -34,6 +34,16 @@
     selectedEmployees.value = selectedEmployees.value.filter((id) => !ids.has(id))
   }
   const selected = ref<PlanDetail | null>(null)
+  const editingId = ref<number | null>(null),
+    editingVersion = ref(0)
+  const expiring = computed(() =>
+    plans.value.filter(
+      (plan) =>
+        plan.status === 'PUBLISHED' &&
+        plan.daysRemaining <= 7 &&
+        (props.admin || plan.progressPercent < 100)
+    )
+  )
   const loading = ref(false)
   const error = ref('')
   const notice = ref('')
@@ -80,25 +90,163 @@
       loading.value = false
     }
   }
-  async function create() {
+  async function savePlan() {
     if (!form.courseId && !form.examId) {
       error.value = '至少选择一门已发布课程或一场已发布考试'
       return
     }
     loading.value = true
     error.value = ''
+    const payload = {
+      title: form.title,
+      description: form.description,
+      category: form.category,
+      startDate: form.startDate || undefined,
+      endDate: form.endDate || undefined,
+      courses: form.courseId
+        ? [{ courseId: form.courseId, required: form.courseRequired }]
+        : [],
+      exams: form.examId ? [{ examId: form.examId, required: form.examRequired }] : []
+    }
     try {
-      selected.value = await api.createPlan({
-        title: form.title,
-        description: form.description,
-        category: form.category,
-        startDate: form.startDate || undefined,
-        endDate: form.endDate || undefined,
-        courses: form.courseId ? [{ courseId: form.courseId, required: form.courseRequired }] : [],
-        exams: form.examId ? [{ examId: form.examId, required: form.examRequired }] : []
-      })
+      if (editingId.value) {
+        selected.value = await api.updatePlan(editingId.value, {
+          ...payload,
+          version: editingVersion.value
+        })
+        editingId.value = null
+        editingVersion.value = 0
+        message('计划草稿已保存')
+      } else {
+        selected.value = await api.createPlan(payload)
+        message('培训计划草稿已创建')
+      }
       await load()
-      message('培训计划草稿已创建')
+    } catch (e) {
+      apiMessage(e)
+    } finally {
+      loading.value = false
+    }
+  }
+  async function startEdit(plan: TrainingPlan) {
+    loading.value = true
+    error.value = ''
+    try {
+      const detail = await api.planDetail(plan.id, true)
+      const courseItems = detail.items.filter((item) => item.itemType === 'COURSE')
+      const examItems = detail.items.filter((item) => item.itemType === 'EXAM')
+      if (courseItems.length > 1 || examItems.length > 1) {
+        error.value =
+          '该计划包含多门课程或多场考试，当前编辑表单只支持一门课程 + 一场考试；请新建计划或通过接口调整。'
+        return
+      }
+      Object.assign(form, {
+        title: detail.plan.title,
+        description: detail.plan.description ?? '',
+        category: detail.plan.category,
+        startDate: detail.plan.startDate,
+        endDate: detail.plan.endDate,
+        courseId: courseItems[0]?.itemId ?? 0,
+        examId: examItems[0]?.itemId ?? 0,
+        courseRequired: courseItems[0]?.required ?? true,
+        examRequired: examItems[0]?.required ?? true
+      })
+      editingId.value = detail.plan.id
+      editingVersion.value = detail.plan.version
+      selected.value = detail
+      message('已载入草稿，修改后保存')
+    } catch (e) {
+      apiMessage(e)
+    } finally {
+      loading.value = false
+    }
+  }
+  function resetForm() {
+    Object.assign(form, {
+      title: '新员工综合培训计划',
+      description: '完成课程学习并通过对应考试。',
+      category: '入职培训',
+      startDate: '',
+      endDate: '',
+      courseId: courses.value.find((item) => item.status === 'PUBLISHED')?.id ?? 0,
+      examId: exams.value.find((item) => item.status === 'PUBLISHED')?.id ?? 0,
+      courseRequired: true,
+      examRequired: true
+    })
+    editingId.value = null
+    editingVersion.value = 0
+  }
+  function cancelEdit() {
+    resetForm()
+    message('已取消编辑')
+  }
+  function statusLabel(plan: TrainingPlan) {
+    if (plan.status === 'TERMINATED') return '已终止'
+    if (plan.status === 'DRAFT') return '草稿'
+    if (!props.admin) return plan.progressPercent === 100 ? '已完成' : '进行中'
+    return '已发布'
+  }
+  function expiryLabel(plan: TrainingPlan) {
+    if (plan.status !== 'PUBLISHED' || plan.daysRemaining > 7) return ''
+    if (plan.daysRemaining < 0) return `已逾期 ${Math.abs(plan.daysRemaining)} 天`
+    if (plan.daysRemaining === 0) return '今天到期'
+    return `剩余 ${plan.daysRemaining} 天`
+  }
+  async function terminate(plan: TrainingPlan) {
+    let reason = ''
+    try {
+      const result = await ElMessageBox.prompt(
+        '员工会看到终止原因；终止后该计划不能再推进或刷新进度。',
+        `终止「${plan.title}」`,
+        {
+          confirmButtonText: '确认终止',
+          cancelButtonText: '取消',
+          type: 'warning',
+          inputType: 'textarea',
+          inputPlaceholder: '例如：培训需求取消',
+          inputValidator: (value: string) => (value && value.trim() ? true : '请填写终止原因')
+        }
+      )
+      reason = String(result.value ?? '').trim()
+    } catch {
+      return
+    }
+    loading.value = true
+    error.value = ''
+    try {
+      selected.value = await api.terminatePlan(plan.id, reason, plan.version)
+      await load()
+      message('培训计划已终止')
+    } catch (e) {
+      apiMessage(e)
+    } finally {
+      loading.value = false
+    }
+  }
+  async function extend(plan: TrainingPlan) {
+    let endDate = ''
+    try {
+      const result = await ElMessageBox.prompt(
+        '新的结束日期（YYYY-MM-DD）。考试截止日期需在考试管理中单独调整。',
+        `延期「${plan.title}」`,
+        {
+          confirmButtonText: '确认延期',
+          cancelButtonText: '取消',
+          inputValue: plan.endDate,
+          inputPattern: /^\d{4}-\d{2}-\d{2}$/,
+          inputErrorMessage: '请输入 YYYY-MM-DD 格式的日期'
+        }
+      )
+      endDate = String(result.value ?? '').trim()
+    } catch {
+      return
+    }
+    loading.value = true
+    error.value = ''
+    try {
+      selected.value = await api.extendPlan(plan.id, endDate, plan.version)
+      await load()
+      message('培训计划已延期')
     } catch (e) {
       apiMessage(e)
     } finally {
@@ -167,7 +315,7 @@
         ><h1>{{ admin ? '培训计划' : '我的培训计划' }}</h1
         ><p>{{
           admin
-            ? '把已发布课程和考试组合为一个可追踪的培训任务。'
+            ? '草稿可编辑；发布后可延期或终止，名单和已签发证书不会被删除。'
             : '完成全部必修课程和考试后自动结业，选修项目不影响结业。'
         }}</p></div
       ><button class="outline-button" :disabled="loading" @click="load">刷新数据</button></div
@@ -176,6 +324,12 @@
     ><div v-if="error" class="api-alert"
       ><b>培训计划接口</b><span>{{ error }}</span
       ><button class="text-button" @click="error = ''">关闭</button></div
+    ><div v-if="expiring.length" class="plan-reminder" role="status"
+      ><b>到期提醒</b
+      ><span
+        >{{ admin ? '有' : '你有' }} {{ expiring.length }}
+        个计划已到期或将在 7 天内到期，请尽快处理。</span
+      ></div
     >
     <div v-if="loading && !plans.length" class="empty-state">正在读取培训计划…</div>
     <div v-if="admin" class="panel roster-selector"
@@ -230,7 +384,12 @@
         ><article v-for="plan in plans" :key="plan.id" class="plan-card"
           ><div
             ><span class="course-meta"
-              >{{ plan.category }} · {{ plan.startDate }} 至 {{ plan.endDate }}</span
+              >{{ plan.category }} · {{ plan.startDate }} 至 {{ plan.endDate
+              }}<template v-if="expiryLabel(plan)"
+                > · <span class="plan-expiry" :class="{ overdue: plan.daysRemaining < 0 }">{{
+                  expiryLabel(plan)
+                }}</span></template
+              ></span
             ><h3>{{ plan.title }}</h3
             ><p>{{ plan.description || '暂无计划说明' }}</p
             ><div v-if="!admin" class="progress-track"
@@ -242,30 +401,44 @@
               >{{ plan.assigneeCount }} 名参训员工 · {{ plan.totalItems }} 项必修要求</small
             ></div
           ><div class="plan-card-actions"
-            ><span class="status-pill">{{
-              plan.status === 'PUBLISHED'
-                ? admin
-                  ? '已发布'
-                  : plan.progressPercent === 100
-                    ? '已完成'
-                    : '进行中'
-                : '草稿'
-            }}</span
+            ><span class="status-pill">{{ statusLabel(plan) }}</span
+            ><button
+              v-if="admin && plan.status === 'DRAFT'"
+              class="text-button"
+              :disabled="loading"
+              @click="startEdit(plan)"
+              >编辑</button
             ><button
               v-if="admin && plan.status === 'DRAFT'"
               class="text-button"
               :disabled="loading"
               @click="publish(plan)"
               >发布</button
+            ><button
+              v-if="admin && plan.status === 'PUBLISHED'"
+              class="text-button"
+              :disabled="loading"
+              @click="extend(plan)"
+              >延期</button
+            ><button
+              v-if="admin && plan.status === 'PUBLISHED'"
+              class="text-button"
+              :disabled="loading"
+              @click="terminate(plan)"
+              >终止</button
             ><button class="text-button" :disabled="loading" @click="open(plan)">查看</button
-            ><button v-if="!admin" class="outline-button compact" @click="refreshProgress(plan)"
+            ><button
+              v-if="!admin && plan.status === 'PUBLISHED'"
+              class="outline-button compact"
+              @click="refreshProgress(plan)"
               >刷新进度</button
             ></div
           ></article
         ><p v-if="!plans.length" class="empty-state">暂无培训计划</p></div
       >
-      <form v-if="admin" class="panel plan-form" @submit.prevent="create"
-        ><div class="panel-heading"><h2>创建计划草稿</h2></div
+      <form v-if="admin" class="panel plan-form" @submit.prevent="savePlan"
+        ><div class="panel-heading"
+          ><h2>{{ editingId ? '编辑计划草稿' : '创建计划草稿' }}</h2></div
         ><div class="form-grid"
           ><label>计划名称<input v-model="form.title" required /></label
           ><label>分类<input v-model="form.category" /></label
@@ -297,22 +470,40 @@
             ><input v-model="form.examRequired" type="checkbox" />所选考试为必修</label
           ><label class="wide"
             >说明<textarea v-model="form.description" rows="2"></textarea></label></div
-        ><button class="primary-button compact" :disabled="loading">创建计划</button></form
+        ><button class="primary-button compact" :disabled="loading">{{
+          editingId ? '保存修改' : '创建计划'
+        }}</button
+        ><button
+          v-if="editingId"
+          type="button"
+          class="text-button"
+          :disabled="loading"
+          @click="cancelEdit"
+          >取消编辑</button
+        ></form
       >
     </template>
     <div v-if="selected" class="detail-panel plan-detail"
       ><div class="panel-heading"
         ><h2>{{ selected.plan.title }}</h2
+        ><span class="status-pill">{{ statusLabel(selected.plan) }}</span
         ><button class="text-button" @click="selected = null">关闭</button></div
       ><p class="muted"
         >{{ selected.plan.description
         }}<template v-if="!admin"> · {{ selected.plan.progressPercent }}% 完成</template></p
+      ><p
+        v-if="selected.plan.status === 'TERMINATED'"
+        class="plan-terminated"
+        >已于 {{ selected.plan.terminatedAt?.slice(0, 10) }} 终止<template
+          v-if="selected.plan.terminationReason"
+          >：{{ selected.plan.terminationReason }}</template
+        ></p
       ><div class="plan-items"
         ><article v-for="item in selected.items" :key="`${item.itemType}-${item.itemId}`"
           ><span class="status-pill">{{ item.itemType === 'COURSE' ? '课程' : '考试' }}</span
           ><strong>{{ item.title }}</strong
           ><router-link
-            v-if="employeeLinks"
+            v-if="employeeLinks && selected.plan.status === 'PUBLISHED'"
             class="text-button"
             :to="item.itemType === 'COURSE' ? `/learn/${item.itemId}` : '/exams'"
             >{{ item.itemType === 'COURSE' ? '前往学习' : '前往考试' }}</router-link
@@ -327,3 +518,32 @@
     >
   </section>
 </template>
+
+<style scoped>
+  .plan-reminder {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    padding: 12px 16px;
+    margin: 14px 0;
+    font-size: 13px;
+    color: #7a4a00;
+    background: #fff8e6;
+    border: 1px solid #e9c46a;
+    border-radius: 10px;
+  }
+  .plan-expiry {
+    font-weight: 600;
+    color: #a15c00;
+  }
+  .plan-expiry.overdue {
+    color: #b42318;
+  }
+  .plan-terminated {
+    padding: 10px 14px;
+    color: #b42318;
+    background: #fff2f0;
+    border: 1px solid #f3c2bd;
+    border-radius: 8px;
+  }
+</style>

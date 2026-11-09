@@ -1,3 +1,13 @@
+# 培训计划生命周期（2026-11-09）
+
+- V17 增加 `training_plan.terminated_at`、`termination_reason`，状态新增 `TERMINATED`。
+- `PUT /api/v1/admin/plans/{id}`：仅草稿可编辑，整单替换课程/考试项，必须携带当前 `version`；发布后不可编辑。
+- `POST /api/v1/admin/plans/{id}/terminate`：仅已发布计划，必填终止原因；终止后员工仍能看到计划和原因，但不能刷新或推进进度；不删除分配记录，也不撤销已签发证书。
+- `POST /api/v1/admin/plans/{id}/extend`：仅已发布计划，只能延后不能缩短；考试截止日期独立保存，需要到考试管理中单独调整。
+- `PlanView` 新增 `daysRemaining/terminatedAt/terminationReason`；员工计划列表包含已终止计划并显示原因。
+- 到期提醒当前为站内提示：计划列表展示“已逾期/剩余 N 天”，对 7 天内到期或已逾期的计划给出提醒；没有邮件/短信发送通道。
+- 验证：新增 4 项计划生命周期用例，后端全套 92 项通过。
+
 # 学习时长与完成判定（2026-11-09）
 
 - V16 为 `study_progress` 增加 `watched_seconds`、`last_reported_at`。

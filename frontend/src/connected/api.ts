@@ -234,6 +234,9 @@ export type TrainingPlan = {
   progressPercent: number
   assigneeCount: number
   version: number
+  daysRemaining: number
+  terminatedAt?: string
+  terminationReason?: string
 }
 export type PlanItem = {
   itemType: 'COURSE' | 'EXAM'
@@ -764,6 +767,18 @@ export const api = {
     raw<PlanDetail>(`/api/v1/${admin ? 'admin' : 'employee'}/plans/${id}`),
   createPlan: (body: object) =>
     raw<PlanDetail>('/api/v1/admin/plans', { method: 'POST', body: JSON.stringify(body) }),
+  updatePlan: (id: number, body: object) =>
+    raw<PlanDetail>(`/api/v1/admin/plans/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  terminatePlan: (id: number, reason: string, version: number) =>
+    raw<PlanDetail>(`/api/v1/admin/plans/${id}/terminate`, {
+      method: 'POST',
+      body: JSON.stringify({ reason, version })
+    }),
+  extendPlan: (id: number, endDate: string, version: number) =>
+    raw<PlanDetail>(`/api/v1/admin/plans/${id}/extend`, {
+      method: 'POST',
+      body: JSON.stringify({ endDate, version })
+    }),
   eligibleEmployees: () =>
     raw<Array<{ id: number; employeeNo: string; name: string; departmentName?: string }>>(
       '/api/v1/admin/plans/eligible-employees'
