@@ -1,3 +1,12 @@
+# 学习时长与完成判定（2026-11-09）
+
+- V16 为 `study_progress` 增加 `watched_seconds`、`last_reported_at`。
+- `PUT /api/v1/employee/courses/{courseId}/chapters/{chapterId}/progress` 现在是心跳接口：客户端上报 `progressPercent/lastPositionSeconds/completed/playing`，服务端按两次请求之间的**服务器时间**累计学习时长；客户端不能提交“已学秒数”。
+- 完成条件：`watched_seconds >= requiredSeconds`，且本次请求 `completed=true` 或视频进度到 100%。`requiredSeconds = max(60, round(章节预计时长 × 60 × 0.8))`。
+- 防刷规则：间隔小于 3 秒不累计；大于 30 秒不累计（后台标签页、断点恢复不刷时长）；视频前进跳转按“墙钟时间 × 2 + 5 秒”钳制；同一课程的并发心跳用报名行锁串行化。
+- 响应新增 `watchedSeconds/requiredSeconds/remainingSeconds`，章节详情新增 `requiredSeconds`；历史已完成记录保留 `completed_at`，不回退，历史未完成记录从 0 秒开始累计。
+- 配置：`zhixing.study.completion-ratio`（默认 0.8）、`zhixing.study.min-seconds`（默认 60）。
+
 # 反馈、公告与平台设置（2026-11-02）
 
 Flyway V14 增加平台设置、反馈、公告和收件人。已有数据库通过正常 Flyway migrate 升级，不运行 clean。累计 71 项测试通过（新增 11 项真实 MySQL 测试）。

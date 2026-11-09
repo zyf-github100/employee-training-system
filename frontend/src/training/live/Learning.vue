@@ -9,6 +9,7 @@
     type Resource
   } from '../../connected/api'
   import { errorMessage } from './session'
+
   const id = Number(useRoute().params.id),
     detail = ref<CourseDetail>(),
     progress = ref<Progress[]>([]),
@@ -19,14 +20,43 @@
     notice = ref(''),
     resource = ref<Resource>(),
     resourceUrl = ref(''),
-    resourceLoading = ref(false)
+    resourceLoading = ref(false),
+    videoEl = ref<HTMLVideoElement>(),
+    visible = ref(document.visibilityState === 'visible'),
+    videoPlaying = ref(false)
   const chapter = computed(() => detail.value?.chapters.find((c) => c.id === selected.value))
   const currentProgress = computed(() => progress.value.find((p) => p.chapterId === selected.value))
+  // Reading a text/PDF chapter counts as active while the tab is visible; a
+  // video only counts while it is actually playing.
+  const activity = computed(() => visible.value && (!videoEl.value || videoPlaying.value))
+  const watchedSeconds = computed(() => currentProgress.value?.watchedSeconds ?? 0)
+  const requiredSeconds = computed(
+    () => currentProgress.value?.requiredSeconds ?? chapter.value?.requiredSeconds ?? 0
+  )
+  const remainingSeconds = computed(() =>
+    currentProgress.value?.completed
+      ? 0
+      : Math.max(0, requiredSeconds.value - watchedSeconds.value)
+  )
+  const studyPercent = computed(() =>
+    requiredSeconds.value === 0
+      ? 0
+      : Math.min(100, Math.round((watchedSeconds.value * 100) / requiredSeconds.value))
+  )
   let resourceRequest = 0,
     disposed = false,
     position = 0,
-    dirty = false,
-    saving: Promise<void> | undefined
+    inFlight: Promise<Progress | undefined> | null = null
+
+  function minutes(seconds: number) {
+    return `${Math.max(0, Math.ceil(seconds / 60))} 分钟`
+  }
+  function currentPercent() {
+    const video = videoEl.value
+    if (video && Number.isFinite(video.duration) && video.duration > 0)
+      return Math.min(100, Math.floor((video.currentTime / video.duration) * 100))
+    return currentProgress.value?.progressPercent ?? 0
+  }
   async function load() {
     loading.value = true
     error.value = ''
@@ -63,36 +93,40 @@
   function updateProgress(value: Progress) {
     progress.value = [...progress.value.filter((p) => p.chapterId !== value.chapterId), value]
   }
-  async function flush() {
-    if (saving) await saving
-    if (!dirty || !detail.value?.enrolled || !chapter.value) return
-    const chapterId = chapter.value.id,
+  async function save(completed: boolean, playing = activity.value): Promise<Progress | undefined> {
+    if (!detail.value?.enrolled || disposed) return
+    if (inFlight) await inFlight
+    if (!chapter.value) return
+    const courseId = id,
+      chapterId = chapter.value.id,
       seconds = position,
-      pct = currentProgress.value?.progressPercent ?? 0
-    saving = (async () => {
-      updateProgress(await api.saveProgress(id, chapterId, pct, seconds))
-      if (position === seconds) dirty = false
-      notice.value = '学习位置已保存'
+      pct = completed ? 100 : currentPercent()
+    inFlight = (async () => {
+      const value = await api.saveProgress(courseId, chapterId, pct, seconds, completed, playing)
+      updateProgress(value)
+      return value
     })()
     try {
-      await saving
-    } catch (e) {
-      error.value = errorMessage(e)
-      throw e
+      return await inFlight
     } finally {
-      saving = undefined
+      inFlight = null
     }
   }
   async function finish() {
     busy.value = true
     error.value = ''
     try {
-      await flush()
-      if (!chapter.value) return
-      updateProgress(await api.saveProgress(id, chapter.value.id, 100, position, true))
+      const result = await save(true)
+      if (!result) return
+      if (!result.completed) {
+        notice.value = `还需学习 ${minutes(result.remainingSeconds)}，系统按实际学习时长判定`
+        return
+      }
       detail.value = await api.courseDetail(id)
       notice.value =
-        detail.value.progressPercent === 100 ? '课程已完成，相关培训进度已自动更新' : '章节已完成'
+        detail.value.progressPercent === 100
+          ? '课程已完成，相关培训进度已自动更新'
+          : '章节已完成'
     } catch (e) {
       error.value = errorMessage(e)
     } finally {
@@ -101,6 +135,7 @@
   }
   function clearResource() {
     resourceRequest++
+    videoPlaying.value = false
     if (resourceUrl.value) URL.revokeObjectURL(resourceUrl.value)
     resourceUrl.value = ''
     resource.value = undefined
@@ -108,14 +143,14 @@
   }
   async function selectChapter(chapterId: number) {
     try {
-      await flush()
-      clearResource()
-      selected.value = chapterId
-      position = currentProgress.value?.lastPositionSeconds ?? 0
-      notice.value = ''
+      await save(false)
     } catch {
-      /* The failed save is shown before leaving the chapter. */
+      return
     }
+    clearResource()
+    selected.value = chapterId
+    position = currentProgress.value?.lastPositionSeconds ?? 0
+    notice.value = ''
   }
   async function openResource(item: Resource) {
     clearResource()
@@ -139,24 +174,42 @@
   }
   function videoProgress(event: Event) {
     position = Math.floor((event.target as HTMLVideoElement).currentTime)
-    dirty = true
+  }
+  function videoStarted() {
+    videoPlaying.value = true
+  }
+  function videoPaused() {
+    void save(false, true).catch(() => {})
+    videoPlaying.value = false
+  }
+  function onVisibility() {
+    if (document.visibilityState !== 'visible') {
+      void save(false, activity.value).catch(() => {})
+      visible.value = false
+    } else {
+      visible.value = true
+    }
   }
   const timer = window.setInterval(() => {
-    if (dirty && !saving) void flush().catch(() => {})
+    if (!currentProgress.value?.completed && activity.value) void save(false).catch(() => {})
   }, 10000)
   onBeforeRouteLeave(async () => {
     if (!currentUser.value) return true
     try {
-      await flush()
+      await save(false)
       return true
     } catch {
       return false
     }
   })
-  onMounted(load)
+  onMounted(() => {
+    document.addEventListener('visibilitychange', onVisibility)
+    void load()
+  })
   onUnmounted(() => {
     disposed = true
     window.clearInterval(timer)
+    document.removeEventListener('visibilitychange', onVisibility)
     clearResource()
   })
 </script>
@@ -165,9 +218,7 @@
     ><router-link class="text-button" to="/courses">← 返回课程中心</router-link
     ><div v-if="error" class="api-alert" role="alert"
       >{{ error
-      }}<button :disabled="busy" @click="dirty ? flush().catch(() => {}) : load()"
-        >重试</button
-      ></div
+      }}<button :disabled="busy" @click="load">重试</button></div
     ><div v-if="notice" class="toast" role="status">{{ notice }}</div
     ><div v-if="loading" class="empty-state">正在读取课程…</div
     ><template v-else-if="detail"
@@ -177,10 +228,9 @@
           ><h1>{{ detail.course.title }}</h1
           ><p>{{ detail.course.summary }}</p></div
         ><span class="status-pill">{{ detail.progressPercent }}% 完成</span></div
-      ><div class="progress-track"><i :style="{ width: `${detail.progressPercent}%` }" /></div
-      ><p class="muted"
-        >已完成 {{ detail.completedChapters }} / {{ detail.chapters.length }} 个章节</p
-      ><button v-if="!detail.enrolled" class="primary-button" :disabled="busy" @click="enroll"
+      ><div class="progress-track"><i :style="{ width: `${detail.progressPercent}%` }" /></div>
+      <p class="muted">已完成 {{ detail.completedChapters }} / {{ detail.chapters.length }} 个章节</p>
+      <button v-if="!detail.enrolled" class="primary-button" :disabled="busy" @click="enroll"
         >报名并开始学习</button
       ><div class="live-learning-grid"
         ><aside class="panel"
@@ -217,12 +267,15 @@
               ><h3>{{ resource.title }}</h3
               ><video
                 v-if="resource.resourceType === 'VIDEO'"
+                ref="videoEl"
                 :src="resourceUrl"
                 controls
                 playsinline
                 @loadedmetadata="restoreVideo"
                 @timeupdate="videoProgress"
-                @pause="flush().catch(() => {})"
+                @play="videoStarted"
+                @pause="videoPaused"
+                @ended="videoPaused"
               /><iframe
                 v-else-if="resource.resourceType === 'PDF'"
                 :src="resourceUrl"
@@ -237,6 +290,16 @@
                 class="text-button"
                 >下载资源</a
               ></div
+            ><div v-if="!currentProgress?.completed" class="chapter-study"
+              ><div class="progress-track"
+                ><i :style="{ width: `${studyPercent}%` }" /></div
+              ><p class="muted"
+                >已学习 {{ minutes(watchedSeconds) }} / 需 {{ minutes(requiredSeconds)
+                }}<span v-if="remainingSeconds > 0"
+                  >，还需 {{ minutes(remainingSeconds) }}</span
+                ></p
+              ></div
+            ><p v-else class="muted">本章已完成</p
             ><button
               class="primary-button"
               :disabled="busy || currentProgress?.completed"
@@ -244,7 +307,9 @@
               >{{
                 currentProgress?.completed ? '本章已完成' : busy ? '保存中…' : '完成本章学习'
               }}</button
-            ><p class="muted">阅读章节并完成学习资源后，确认本章完成。</p></template
+            ><p class="muted"
+              >系统按页面停留和视频播放时长累计学习时间，达到本章预计时长的 80% 后才能标记完成。</p
+            ></template
           ><p v-else class="empty-state">请先报名课程，再开始本章学习。</p></article
         ><div v-else class="empty-state">课程暂未添加章节，请联系培训管理员。</div></div
       ></template

@@ -150,6 +150,7 @@ export type Chapter = {
   sortNo: number
   contentMarkdown?: string
   durationMinutes: number
+  requiredSeconds: number
   resources: Resource[]
 }
 export type CourseDetail = {
@@ -165,6 +166,9 @@ export type Progress = {
   lastPositionSeconds: number
   completed: boolean
   completedAt?: string
+  watchedSeconds: number
+  requiredSeconds: number
+  remainingSeconds: number
 }
 export type BankQuestion = {
   id: number
@@ -691,7 +695,8 @@ export const api = {
       body: JSON.stringify({
         progressPercent,
         lastPositionSeconds: 0,
-        completed: progressPercent === 100
+        completed: progressPercent === 100,
+        playing: false
       })
     }),
   courseProgress: (courseId: number) =>
@@ -701,11 +706,12 @@ export const api = {
     chapterId: number,
     progressPercent: number,
     lastPositionSeconds: number,
-    completed = false
+    completed = false,
+    playing = true
   ) =>
     raw<Progress>(`/api/v1/employee/courses/${courseId}/chapters/${chapterId}/progress`, {
       method: 'PUT',
-      body: JSON.stringify({ progressPercent, lastPositionSeconds, completed })
+      body: JSON.stringify({ progressPercent, lastPositionSeconds, completed, playing })
     }),
   uploadResource: (chapterId: number, file: File, title: string, sortNo = 1) => {
     const body = new FormData()

@@ -61,7 +61,12 @@ class TrainingWorkflowTests {
     }
     private void finishCourse() {
         learning.enrollment(course,employee);
-        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,25,true));
+        seedStudyTime();
+        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,25,true,false));
+    }
+    private void seedStudyTime() {
+        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,false));
+        jdbc.update("UPDATE study_progress sp JOIN course_enrollment ce ON ce.id=sp.enrollment_id SET sp.watched_seconds=100000 WHERE ce.user_id=? AND sp.chapter_id=?",employee,chapter);
     }
     private void race(Callable<?> first, Callable<?> second) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(2);
@@ -132,8 +137,9 @@ class TrainingWorkflowTests {
     @Test void requiredCourseAndExamCompletePlanAndIssueOneCertificateConcurrently() throws Exception {
         long plan = plan(false);
         learning.enrollment(course,employee);
+        seedStudyTime();
         long attempt = exams.begin(paper,employee).attempt().id();
-        race(() -> learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,25,true)), () -> exams.submit(attempt,employee,new ExamDtos.SubmitRequest(answers(1))));
+        race(() -> learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,25,true,false)), () -> exams.submit(attempt,employee,new ExamDtos.SubmitRequest(answers(1))));
         assertThat(plans.detail(plan,false,employee).orElseThrow().plan().progressPercent()).isEqualTo(100);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM training_certificate WHERE plan_id=? AND user_id=?",Integer.class,plan,employee)).isEqualTo(1);
         String no=jdbc.queryForObject("SELECT certificate_no FROM training_certificate WHERE plan_id=? AND user_id=?",String.class,plan,employee);
@@ -149,7 +155,7 @@ class TrainingWorkflowTests {
 
     @Test void optionalItemsDoNotBlockCompletionAndProgressCannotRegress() {
         long plan = plan(true); finishCourse();
-        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(20,10,false));
+        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(20,10,false,false));
         assertThat(learning.detail(course,employee,true).progressPercent()).isEqualTo(100);
         var detail=plans.detail(plan,false,employee).orElseThrow();
         assertThat(detail.plan().progressPercent()).isEqualTo(100);
@@ -163,7 +169,7 @@ class TrainingWorkflowTests {
         assertThat(plans.publish(plan,admin,List.of(employee)).plan().assigneeCount()).isEqualTo(1);
         assertThatThrownBy(() -> plans.publish(plan,admin,List.of(other))).isInstanceOf(ApiException.class);
         assertThatThrownBy(() -> plans.publish(plan,admin,List.of())).isInstanceOf(ApiException.class);
-        assertThatThrownBy(() -> learning.updateProgress(course,chapter,other,new LearningDtos.ProgressRequest(100,0,true))).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> learning.updateProgress(course,chapter,other,new LearningDtos.ProgressRequest(100,0,true,false))).isInstanceOf(ApiException.class);
     }
 
     @Test void publishingAfterCompletionImmediatelyIssuesCertificate() {
@@ -180,17 +186,58 @@ class TrainingWorkflowTests {
         assertThat(exams.attempt(attempt).score()).isEqualTo(100);
     }
 
-    @Test void hundredPercentProgressAlwaysHasACompletionFact() {
+    @Test void hundredPercentProgressDoesNotBypassStudyTime() {
         learning.enrollment(course,employee);
-        var result=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,10,false));
-        assertThat(result.completed()).isTrue();
+        var result=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,10,true,false));
+        assertThat(result.completed()).isFalse();
+        assertThat(result.remainingSeconds()).isGreaterThan(0);
+        assertThat(result.progressPercent()).isLessThan(100);
+        assertThat(learning.detail(course,employee,true).completedChapters()).isZero();
+    }
+
+    @Test void studyTimeAccumulatesAcrossHeartbeatsAndCompletes() {
+        learning.enrollment(course,employee);
+        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,false));
+        int watched=0;
+        for(int i=0;i<60;i++){
+            backdateHeartbeat(10);
+            var heartbeat=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,true));
+            watched=heartbeat.watchedSeconds();
+            if(watched>=heartbeat.requiredSeconds())break;
+        }
+        var done=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,10,true,false));
+        assertThat(done.watchedSeconds()).isGreaterThanOrEqualTo(done.requiredSeconds());
+        assertThat(done.completed()).isTrue();
         assertThat(learning.detail(course,employee,true).completedChapters()).isEqualTo(1);
+    }
+
+    @Test void studyTimeGapIsCappedAndBurstsDoNotCount() {
+        learning.enrollment(course,employee);
+        var first=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,true));
+        assertThat(first.watchedSeconds()).isZero();
+        backdateHeartbeat(120);
+        var capped=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,true));
+        assertThat(capped.watchedSeconds()).isBetween(1,30);
+        var burst=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,true));
+        assertThat(burst.watchedSeconds()).isEqualTo(capped.watchedSeconds());
+    }
+
+    @Test void forwardSeekCannotAdvancePositionBeyondWallClock() {
+        learning.enrollment(course,employee);
+        learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(0,0,false,false));
+        backdateHeartbeat(5);
+        var result=learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(90,600,false,true));
+        assertThat(result.lastPositionSeconds()).isLessThan(600);
+    }
+
+    private void backdateHeartbeat(int seconds) {
+        jdbc.update("UPDATE study_progress sp JOIN course_enrollment ce ON ce.id=sp.enrollment_id SET sp.last_reported_at=DATE_SUB(CURRENT_TIMESTAMP,INTERVAL ? SECOND) WHERE ce.user_id=? AND sp.chapter_id=?",seconds,employee,chapter);
     }
 
     @Test void withdrawnCourseCannotReceiveNewProgress() {
         learning.enrollment(course,employee);
         jdbc.update("UPDATE course SET status='DRAFT' WHERE id=?",course);
-        assertThatThrownBy(() -> learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,10,true))).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> learning.updateProgress(course,chapter,employee,new LearningDtos.ProgressRequest(100,10,true,false))).isInstanceOf(ApiException.class);
         assertThat(learning.progress(course,employee)).isEmpty();
     }
 }
