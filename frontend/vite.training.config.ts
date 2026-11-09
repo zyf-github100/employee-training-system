@@ -50,7 +50,9 @@ export default defineConfig({
           }
         }
       },
-      input: { main: 'index.html', connected: 'connected.html', demo: 'demo.html' }
+      // Production build only ships the real entry. The legacy connected.html and
+      // demo.html stay available in dev but are not part of the deployed bundle.
+      input: { main: 'index.html' }
     }
   }
 })

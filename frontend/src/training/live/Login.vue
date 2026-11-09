@@ -89,7 +89,7 @@
           ><router-link class="text-link" to="/account-setup"
             >使用激活链接或设置码设置密码</router-link
           ></p
-        ><a class="text-link" href="/demo.html">查看本地演示（与正式记录隔离）</a></div
+        ></div
       ></section
     ></div
   >

@@ -14,6 +14,9 @@ spring:
       max-request-size: ${TRAINING_UPLOAD_MAX_REQUEST_SIZE:210MB}
 server:
   port: ${SERVER_PORT:8081}
+  # Respect X-Forwarded-For / X-Forwarded-Proto from the reverse proxy so login
+  # rate limiting and audit records see the real client address.
+  forward-headers-strategy: native
   servlet:
     context-path: /
 management:

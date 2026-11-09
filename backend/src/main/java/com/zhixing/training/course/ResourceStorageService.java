@@ -53,7 +53,7 @@ public class ResourceStorageService {
                 Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
             }
             String sha256 = HexFormat.of().formatHex(digest.digest());
-            return new StoredFile(originalName, mediaType(file.getContentType(), extension), resourceType, file.getSize(), storageKey, sha256);
+            return new StoredFile(originalName, mediaType(extension), resourceType, file.getSize(), storageKey, sha256);
         } catch (IOException | NoSuchAlgorithmException ex) {
             deleteQuietly(storageKey);
             throw new ApiException(HttpStatus.INTERNAL_SERVER_ERROR, "FILE_STORE_FAILED", "文件保存失败，请稍后重试");
@@ -99,8 +99,9 @@ public class ResourceStorageService {
         return "ATTACHMENT";
     }
 
-    private static String mediaType(String reported, String extension) {
-        if (reported != null && !reported.isBlank() && !"application/octet-stream".equalsIgnoreCase(reported)) return reported;
+    // Never trust the client-supplied Content-Type: a .jpg declared as text/html
+    // would otherwise be served inline from the application origin.
+    private static String mediaType(String extension) {
         return switch (extension) {
             case ".mp4", ".m4v" -> "video/mp4";
             case ".webm" -> "video/webm";

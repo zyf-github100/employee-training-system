@@ -23,5 +23,12 @@ Thumbs.db
 # ===== 本地工具目录 =====
 .playwright-cli/
 
+# ===== 生产部署产物与密钥 =====
+deploy/.env
+deploy/app/
+deploy/web/
+deploy/data/
+deploy/backups/
+
 # ===== 上游模板遗留的 git 备份（可手动删除） =====
 frontend/.git.upstream-backup/
