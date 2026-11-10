@@ -33,10 +33,12 @@ import java.nio.charset.StandardCharsets;
 public class ResourceController {
     private final ResourceRepository resources;
     private final ResourceStorageService storage;
+    private final CourseVersionService revisions;
 
-    public ResourceController(ResourceRepository resources, ResourceStorageService storage) {
+    public ResourceController(ResourceRepository resources, ResourceStorageService storage, CourseVersionService revisions) {
         this.resources = resources;
         this.storage = storage;
+        this.revisions = revisions;
     }
 
     @PostMapping(value = "/admin/course-chapters/{chapterId}/resources", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -58,7 +60,7 @@ public class ResourceController {
     public ApiResponse<Void> delete(@PathVariable long resourceId) {
         ResourceRepository.ResourceRecord record = resources.delete(resourceId)
                 .orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "RESOURCE_NOT_FOUND", "资源不存在"));
-        storage.deleteQuietly(record.storageKey());
+        if (!"PUBLISHED".equals(record.courseStatus())) storage.deleteQuietly(record.storageKey());
         return ApiResponse.ok();
     }
 
@@ -72,7 +74,7 @@ public class ResourceController {
         boolean admin = authentication.getAuthorities().stream().anyMatch(a -> "ROLE_ADMIN".equals(a.getAuthority()));
         if (!admin) {
             long userId = Long.parseLong(jwt.getSubject());
-            if (!"PUBLISHED".equals(record.courseStatus()) || !"PUBLISHED".equals(record.status()) || !resources.enrolled(record.courseId(), userId)) {
+            if (!"PUBLISHED".equals(record.courseStatus()) || !"PUBLISHED".equals(record.status()) || !resources.enrolled(record.courseId(), userId) || !revisions.resourceAllowed(record.courseId(), userId, record.id())) {
                 throw new ApiException(HttpStatus.FORBIDDEN, "RESOURCE_FORBIDDEN", "当前账号没有访问该资源的权限");
             }
         }

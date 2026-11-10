@@ -11,14 +11,17 @@
     saving = ref(false),
     error = ref(''),
     editor = ref(false),
-    editingId = ref<number | null>(null)
-  const labels: Record<string, string> = { single: '单选', multiple: '多选', boolean: '判断' }
+    editingId = ref<number | null>(null),
+    importInput = ref<HTMLInputElement>()
+  const labels: Record<string, string> = { single: '单选', multiple: '多选', boolean: '判断', subjective: '主观题' }
   const fresh = () => ({
     type: 'single' as BankQuestion['type'],
     stem: '',
     options: ['', ''],
     answer: [] as number[],
     analysis: '',
+    referenceAnswer: '',
+    gradingGuide: '',
     category: '',
     difficulty: '基础',
     status: 'ENABLED',
@@ -53,7 +56,7 @@
     editor.value = true
   }
   function changeType() {
-    form.options = form.type === 'boolean' ? ['正确', '错误'] : ['', '']
+    form.options = form.type === 'boolean' ? ['正确', '错误'] : form.type === 'subjective' ? [] : ['', '']
     form.answer = []
   }
   function choose(index: number) {
@@ -69,12 +72,16 @@
   }
   async function save() {
     if (saving.value) return
-    if (!form.answer.length || (form.type === 'multiple' && form.answer.length < 2)) {
+    if (form.type !== 'subjective' && (!form.answer.length || (form.type === 'multiple' && form.answer.length < 2))) {
       ElMessage.error(form.type === 'multiple' ? '多选题请至少选择两个正确答案' : '请选择正确答案')
       return
     }
-    if (new Set(form.options.map((o) => o.trim())).size !== form.options.length) {
+    if (form.type !== 'subjective' && new Set(form.options.map((o) => o.trim())).size !== form.options.length) {
       ElMessage.error('选项内容不能重复')
+      return
+    }
+    if (form.type === 'subjective' && !form.referenceAnswer.trim() && !form.gradingGuide.trim()) {
+      ElMessage.error('主观题请至少填写参考答案或评分标准')
       return
     }
     saving.value = true
@@ -91,6 +98,21 @@
       saving.value = false
     }
   }
+  async function importQuestions(event: Event) {
+    const file = (event.target as HTMLInputElement).files?.[0]
+    if (!file) return
+    saving.value = true
+    try {
+      const result = await api.importQuestions(file)
+      ElMessage.success(`导入完成：${result.imported} 道，${result.rejected} 道被拒绝`)
+      await load()
+    } catch (e) {
+      ElMessage.error(errorMessage(e))
+    } finally {
+      saving.value = false
+      if (importInput.value) importInput.value.value = ''
+    }
+  }
   onMounted(load)
 </script>
 <template>
@@ -99,7 +121,9 @@
       ><div
         ><span class="eyebrow">QUESTION BANK</span><h1>题库管理</h1
         ><p>积累可靠的测评内容，维护题目、正确答案和解析。</p></div
-      ><button class="primary-button" @click="edit()">新增题目</button></div
+      ><div class="section-actions"
+        ><label class="outline-button file-button">批量导入<input ref="importInput" type="file" accept=".csv,.xlsx,.xls" hidden @change="importQuestions" /></label
+        ><button class="primary-button" @click="edit()">新增题目</button></div></div
     >
     <form class="toolbar admin-toolbar" @submit.prevent="load"
       ><input v-model="keyword" aria-label="搜索题目" placeholder="搜索题干或分类" /><select
@@ -169,7 +193,7 @@
             required
             :disabled="saving"
           /></label
-        ><fieldset :disabled="saving"
+        ><fieldset v-if="form.type !== 'subjective'" :disabled="saving"
           ><legend
             >选项与答案 ·
             {{ form.type === 'multiple' ? '勾选至少两个正确答案' : '选择一个正确答案' }}</legend
@@ -201,6 +225,10 @@
             @click="form.options.push('')"
             >＋ 添加选项</button
           ></fieldset
+        ><template v-if="form.type === 'subjective'"
+          ><label>参考答案<textarea v-model="form.referenceAnswer" rows="3" maxlength="5000" required /></label
+          ><label>评分标准<textarea v-model="form.gradingGuide" rows="3" maxlength="5000" required /></label
+        ></template
         ><label
           >答案解析<textarea
             v-model="form.analysis"

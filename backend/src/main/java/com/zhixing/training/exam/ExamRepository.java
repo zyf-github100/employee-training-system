@@ -41,7 +41,7 @@ public class ExamRepository {
     public ExamRepository(JdbcTemplate jdbc, ObjectMapper mapper, PlanRepository plans, com.zhixing.training.organization.DataScopeService scopes) { this.jdbc = jdbc; this.mapper = mapper; this.plans = plans; this.scopes=scopes; }
 
     public List<ExamDtos.QuestionView> questions(String keyword, String status) {
-        StringBuilder sql = new StringBuilder("SELECT id,question_type,stem,options_json,answer_json,analysis,category,difficulty,status,version FROM question_item WHERE 1=1");
+        StringBuilder sql = new StringBuilder("SELECT id,question_type,stem,options_json,answer_json,analysis,category,difficulty,status,version,reference_answer,grading_guide FROM question_item WHERE 1=1");
         List<Object> args = new ArrayList<>();
         if (keyword != null && !keyword.isBlank()) { sql.append(" AND (stem LIKE ? OR category LIKE ?)"); String k = "%" + keyword.trim() + "%"; args.add(k); args.add(k); }
         if (status != null && !status.isBlank()) { sql.append(" AND status=?"); args.add(status); }
@@ -50,25 +50,26 @@ public class ExamRepository {
     }
 
     public Optional<ExamDtos.QuestionView> question(long id) {
-        return jdbc.query("SELECT id,question_type,stem,options_json,answer_json,analysis,category,difficulty,status,version FROM question_item WHERE id=?", (rs, row) -> question(rs), id).stream().findFirst();
+        return jdbc.query("SELECT id,question_type,stem,options_json,answer_json,analysis,category,difficulty,status,version,reference_answer,grading_guide FROM question_item WHERE id=?", (rs, row) -> question(rs), id).stream().findFirst();
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public long createQuestion(ExamDtos.QuestionRequest body, long userId) {
-        validateQuestion(body.type(), body.options(), body.answer());
+        validateQuestion(body);
         KeyHolder key = new GeneratedKeyHolder();
         jdbc.update(connection -> {
-            PreparedStatement ps = connection.prepareStatement("INSERT INTO question_item(question_type,stem,options_json,answer_json,analysis,category,difficulty,status,created_by) VALUES(?,?,?,?,?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS);
-            ps.setString(1, body.type()); ps.setString(2, body.stem().trim()); ps.setString(3, json(body.options())); ps.setString(4, json(normalize(body.answer())));
-            ps.setString(5, body.analysis()); ps.setString(6, blank(body.category(), "通用能力")); ps.setString(7, blank(body.difficulty(), "基础")); ps.setString(8, blank(body.status(), "ENABLED")); ps.setLong(9, userId); return ps;
+            PreparedStatement ps = connection.prepareStatement("INSERT INTO question_item(question_type,stem,options_json,answer_json,analysis,category,difficulty,status,created_by,reference_answer,grading_guide) VALUES(?,?,?,?,?,?,?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS);
+            ps.setString(1, body.type()); ps.setString(2, body.stem().trim()); ps.setString(3, json(body.type().equals("subjective") ? List.of() : body.options())); ps.setString(4, json(body.type().equals("subjective") ? List.of() : normalize(body.answer())));
+            ps.setString(5, body.analysis()); ps.setString(6, blank(body.category(), "通用能力")); ps.setString(7, blank(body.difficulty(), "基础")); ps.setString(8, blank(body.status(), "ENABLED")); ps.setLong(9, userId); ps.setString(10, blank(body.referenceAnswer(), null)); ps.setString(11, blank(body.gradingGuide(), null)); return ps;
         }, key);
         return key.getKey().longValue();
     }
+    public void validateQuestionForImport(ExamDtos.QuestionRequest body) { validateQuestion(body); }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
     public void updateQuestion(long id, ExamDtos.QuestionRequest body) {
-        validateQuestion(body.type(), body.options(), body.answer());
-        int updated = jdbc.update("UPDATE question_item SET question_type=?,stem=?,options_json=?,answer_json=?,analysis=?,category=?,difficulty=?,status=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND version=?", body.type(), body.stem().trim(), json(body.options()), json(normalize(body.answer())), body.analysis(), blank(body.category(), "通用能力"), blank(body.difficulty(), "基础"), blank(body.status(), "ENABLED"), id, body.version());
+        validateQuestion(body);
+        int updated = jdbc.update("UPDATE question_item SET question_type=?,stem=?,options_json=?,answer_json=?,analysis=?,category=?,difficulty=?,status=?,reference_answer=?,grading_guide=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND version=?", body.type(), body.stem().trim(), json(body.type().equals("subjective") ? List.of() : body.options()), json(body.type().equals("subjective") ? List.of() : normalize(body.answer())), body.analysis(), blank(body.category(), "通用能力"), blank(body.difficulty(), "基础"), blank(body.status(), "ENABLED"), blank(body.referenceAnswer(), null), blank(body.gradingGuide(), null), id, body.version());
         if (updated != 1) throw new ApiException(HttpStatus.CONFLICT, "VERSION_CONFLICT", "题目已被其他人修改，请刷新后重试");
     }
 
@@ -77,6 +78,11 @@ public class ExamRepository {
         String attempts = admin ? "(SELECT COUNT(*) FROM exam_attempt ea JOIN sys_user au ON au.id=ea.user_id WHERE ea.paper_id=ep.id AND "+scopes.resolve(userId).userCondition("au")+")" : "(SELECT COUNT(*) FROM exam_attempt ea WHERE ea.paper_id=ep.id AND ea.user_id=?)";
         List<Object> args = admin ? List.of() : List.of(userId, userId);
         return jdbc.query("SELECT ep.id,ep.title,ep.category,ep.duration_minutes,ep.pass_score,ep.deadline,ep.status,ep.version,(SELECT COUNT(*) FROM exam_paper_question pq WHERE pq.paper_id=ep.id) question_count,(SELECT COALESCE(SUM(points),0) FROM exam_paper_question pq WHERE pq.paper_id=ep.id) total_points," + attempts + " attempt_count FROM exam_paper ep WHERE 1=1" + where + " ORDER BY ep.id DESC", (rs, row) -> exam(rs), args.toArray());
+    }
+    public List<ExamDtos.AttemptView> submittedAttempts(long actor) {
+        var scope=scopes.resolve(actor);
+        String condition=scope.userCondition("u");
+        return jdbc.query("SELECT ea.id,ea.paper_id,ep.title,ea.status,ea.score,ea.passed,ea.started_at,ea.submitted_at FROM exam_attempt ea JOIN exam_paper ep ON ep.id=ea.paper_id JOIN sys_user u ON u.id=ea.user_id WHERE ea.status='SUBMITTED' AND (ea.grading_status='PENDING' OR ea.integrity_status='REVIEW') AND (ep.created_by=? OR "+(scope.all()?"1=1":"ep.created_by="+actor)+") AND "+condition+" ORDER BY ea.submitted_at DESC",(rs,row)->new ExamDtos.AttemptView(rs.getLong("id"),rs.getLong("paper_id"),rs.getString("title"),rs.getString("status"),(Integer)rs.getObject("score"),(Boolean)rs.getObject("passed"),rs.getTimestamp("started_at").toInstant(),rs.getTimestamp("submitted_at")==null?null:rs.getTimestamp("submitted_at").toInstant()),scope.all()?new Object[]{actor}:new Object[]{actor});
     }
 
     public Optional<ExamDtos.ExamDetail> detail(long id, boolean includeAnswer, long userId) {
@@ -90,7 +96,7 @@ public class ExamRepository {
 
     private List<ExamDtos.PaperQuestionView> paperQuestions(long paperId, boolean review) {
         return jdbc.query("SELECT id,question_id,question_type,stem,options_json,points," +
-                (review ? "analysis" : "NULL AS analysis") +
+                (review ? "analysis,reference_answer,grading_guide" : "NULL AS analysis,NULL AS reference_answer,NULL AS grading_guide") +
                 " FROM exam_paper_question WHERE paper_id=? ORDER BY sort_no,id", (rs, row) -> paperQuestion(rs), paperId);
     }
 
@@ -102,10 +108,30 @@ public class ExamRepository {
         jdbc.update(connection -> { PreparedStatement ps = connection.prepareStatement("INSERT INTO exam_paper(title,category,duration_minutes,pass_score,deadline,created_by) VALUES(?,?,?,?,?,?)", Statement.RETURN_GENERATED_KEYS); ps.setString(1, body.title().trim()); ps.setString(2, blank(body.category(), "综合测评")); ps.setInt(3, body.durationMinutes()); ps.setInt(4, body.passScore()); ps.setObject(5, deadline); ps.setLong(6, userId); return ps; }, key);
         long id = key.getKey().longValue();
         int sort = 1;
-        for (ExamDtos.ExamQuestionRequest q : body.questions()) { jdbc.update("INSERT INTO exam_paper_question(paper_id,question_id,sort_no,points,question_type,stem,options_json,answer_json,analysis) SELECT ?,id,?,?,question_type,stem,options_json,answer_json,analysis FROM question_item WHERE id=? AND status='ENABLED'", id, sort++, q.points(), q.questionId()); }
+        for (ExamDtos.ExamQuestionRequest q : body.questions()) { jdbc.update("INSERT INTO exam_paper_question(paper_id,question_id,sort_no,points,question_type,stem,options_json,answer_json,analysis,reference_answer,grading_guide) SELECT ?,id,?,?,question_type,stem,options_json,answer_json,analysis,reference_answer,grading_guide FROM question_item WHERE id=? AND status='ENABLED'", id, sort++, q.points(), q.questionId()); }
         int count = count("SELECT COUNT(*) FROM exam_paper_question WHERE paper_id=?", id);
         if (count != body.questions().size()) throw new ApiException(HttpStatus.BAD_REQUEST, "QUESTION_NOT_AVAILABLE", "试卷包含不存在或已停用的题目");
         return id;
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public long createRandomExam(ExamDtos.RandomExamRequest body, long userId) {
+        int total = body.rules().stream().mapToInt(rule -> rule.count() * rule.pointsEach()).sum();
+        if (total != 100) throw bad("随机组卷规则总分必须为 100");
+        List<ExamDtos.ExamQuestionRequest> selected = new ArrayList<>();
+        Set<Long> chosen = new HashSet<>();
+        for (ExamDtos.RandomRule rule : body.rules()) {
+            StringBuilder sql = new StringBuilder("SELECT id FROM question_item WHERE status='ENABLED' AND question_type=?");
+            List<Object> args = new ArrayList<>(); args.add(rule.type());
+            if (rule.category() != null && !rule.category().isBlank()) { sql.append(" AND category=?"); args.add(rule.category().trim()); }
+            if (rule.difficulty() != null && !rule.difficulty().isBlank()) { sql.append(" AND difficulty=?"); args.add(rule.difficulty().trim()); }
+            if (!chosen.isEmpty()) { sql.append(" AND id NOT IN (").append("?,".repeat(chosen.size()).replaceAll(",$","")).append(")"); args.addAll(chosen); }
+            sql.append(" ORDER BY RAND() LIMIT ?"); args.add(rule.count());
+            List<Long> ids = jdbc.queryForList(sql.toString(), Long.class, args.toArray());
+            if (ids.size() != rule.count()) throw new ApiException(HttpStatus.BAD_REQUEST, "QUESTION_POOL_INSUFFICIENT", "随机组卷题库数量不足：" + rule.type());
+            for (long id : ids) { chosen.add(id); selected.add(new ExamDtos.ExamQuestionRequest(id, rule.pointsEach())); }
+        }
+        return createExam(new ExamDtos.ExamRequest(body.title(), body.category(), body.durationMinutes(), body.passScore(), body.deadline(), selected), userId);
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -160,14 +186,19 @@ public class ExamRepository {
         if ("SUBMITTED".equals(existing.status())) return attemptDetail(attemptId, userId).orElseThrow();
         if (expireIfNeeded(attemptId, userId)) return attemptDetail(attemptId, userId).orElseThrow();
 
-        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.answer_json,pq.options_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), parseInts(rs.getString("answer_json")), parseStrings(rs.getString("options_json")).size()), attemptId);
+        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.question_type,pq.answer_json,pq.options_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), rs.getString("question_type"), parseInts(rs.getString("answer_json")), parseStrings(rs.getString("options_json")).size()), attemptId);
         Set<Long> valid = questions.stream().map(ExamQuestionRow::id).collect(java.util.stream.Collectors.toSet());
         for (ExamDtos.AnswerRequest answer : body.answers()) {
             if (!valid.contains(answer.paperQuestionId())) continue;
             ExamQuestionRow question = questions.stream().filter(item -> item.id() == answer.paperQuestionId()).findFirst().orElseThrow();
-            List<Integer> normalized = normalize(answer.answer());
-            if (normalized.stream().anyMatch(index -> index < 0 || index >= question.optionCount())) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ANSWER", "答案选项索引不合法");
-            jdbc.update("INSERT INTO exam_answer(attempt_id,paper_question_id,answer_json,is_correct,score) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE answer_json=VALUES(answer_json),is_correct=NULL,score=NULL,answered_at=CURRENT_TIMESTAMP", attemptId, question.id(), json(normalized), null, null);
+            if ("subjective".equals(question.type())) {
+                String text = answer.text() == null ? "" : answer.text().trim();
+                jdbc.update("INSERT INTO exam_answer(attempt_id,paper_question_id,answer_json,answer_text,is_correct,score) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE answer_text=VALUES(answer_text),is_correct=NULL,score=NULL,grader_id=NULL,grade_comment=NULL,graded_at=NULL,version=version+1,answered_at=CURRENT_TIMESTAMP", attemptId, question.id(), json(List.of()), text, null, null);
+            } else {
+                List<Integer> normalized = normalize(answer.answer());
+                if (normalized.stream().anyMatch(index -> index < 0 || index >= question.optionCount())) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ANSWER", "答案选项索引不合法");
+                jdbc.update("INSERT INTO exam_answer(attempt_id,paper_question_id,answer_json,answer_text,is_correct,score) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE answer_json=VALUES(answer_json),answer_text=NULL,is_correct=NULL,score=NULL,grader_id=NULL,grade_comment=NULL,graded_at=NULL,version=version+1,answered_at=CURRENT_TIMESTAMP", attemptId, question.id(), json(normalized), null, null, null);
+            }
         }
         return attemptDetail(attemptId, userId).orElseThrow();
     }
@@ -180,17 +211,68 @@ public class ExamRepository {
         // Once the server deadline has passed, grade the latest persisted
         // snapshot and ignore any late client payload.
         if (expireIfNeeded(attemptId, userId)) return attempt(attemptId);
-        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.answer_json,pq.options_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), parseInts(rs.getString("answer_json")), parseStrings(rs.getString("options_json")).size()), attemptId);
+        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.question_type,pq.answer_json,pq.options_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), rs.getString("question_type"), parseInts(rs.getString("answer_json")), parseStrings(rs.getString("options_json")).size()), attemptId);
         Set<Long> valid = questions.stream().map(ExamQuestionRow::id).collect(java.util.stream.Collectors.toSet());
         for (ExamDtos.AnswerRequest answer : body.answers()) {
             if (!valid.contains(answer.paperQuestionId())) continue;
             ExamQuestionRow q = questions.stream().filter(item -> item.id() == answer.paperQuestionId()).findFirst().orElseThrow();
-            List<Integer> normalized = normalize(answer.answer());
-            if (normalized.stream().anyMatch(index -> index < 0 || index >= q.optionCount())) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ANSWER", "答案选项索引不合法");
-            boolean correct = same(normalized, q.answer()); int score = correct ? q.points() : 0;
-            jdbc.update("INSERT INTO exam_answer(attempt_id,paper_question_id,answer_json,is_correct,score) VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE answer_json=VALUES(answer_json),is_correct=VALUES(is_correct),score=VALUES(score),answered_at=CURRENT_TIMESTAMP", attemptId, q.id(), json(normalized), correct, score);
+            if ("subjective".equals(q.type())) {
+                String text = answer.text() == null ? "" : answer.text().trim();
+                jdbc.update("INSERT INTO exam_answer(attempt_id,paper_question_id,answer_json,answer_text,is_correct,score) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE answer_text=VALUES(answer_text),is_correct=NULL,score=NULL,grader_id=NULL,grade_comment=NULL,graded_at=NULL,version=version+1,answered_at=CURRENT_TIMESTAMP", attemptId, q.id(), json(List.of()), text, null, null);
+            } else {
+                List<Integer> normalized = normalize(answer.answer());
+                if (normalized.stream().anyMatch(index -> index < 0 || index >= q.optionCount())) throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_ANSWER", "答案选项索引不合法");
+                boolean correct = same(normalized, q.answer()); int score = correct ? q.points() : 0;
+                jdbc.update("INSERT INTO exam_answer(attempt_id,paper_question_id,answer_json,answer_text,is_correct,score) VALUES(?,?,?,?,?,?) ON DUPLICATE KEY UPDATE answer_json=VALUES(answer_json),answer_text=NULL,is_correct=VALUES(is_correct),score=VALUES(score),answered_at=CURRENT_TIMESTAMP", attemptId, q.id(), json(normalized), null, correct, score);
+            }
         }
         return finalizeAttempt(attemptId, userId);
+    }
+
+    public ExamDtos.GradingView grading(long attemptId, long actor) {
+        long paperId = jdbc.queryForObject("SELECT paper_id FROM exam_attempt WHERE id=?", Long.class, attemptId);
+        scopes.requireContentOwner(actor, "exam_paper", paperId);
+        ExamDtos.AttemptView attempt = attempt(attemptId);
+        Map<Long, ExamDtos.PaperQuestionView> questions = paperQuestions(paperId, true).stream().collect(java.util.stream.Collectors.toMap(ExamDtos.PaperQuestionView::id, q -> q));
+        List<ExamDtos.GradingQuestion> rows = jdbc.query("SELECT pq.id,ea.answer_text,ea.score,ea.grade_comment,ea.version FROM exam_paper_question pq LEFT JOIN exam_answer ea ON ea.paper_question_id=pq.id AND ea.attempt_id=? WHERE pq.paper_id=? ORDER BY pq.sort_no,pq.id", (rs, row) -> {
+            long id = rs.getLong("id");
+            return new ExamDtos.GradingQuestion(questions.get(id), rs.getString("answer_text"), (Integer) rs.getObject("score"), rs.getString("grade_comment"), rs.getLong("version"));
+        }, attemptId, paperId);
+        return new ExamDtos.GradingView(attempt, rows);
+    }
+
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public ExamDtos.GradingView grade(long attemptId, long actor, ExamDtos.GradeRequest body) {
+        long paperId = jdbc.queryForObject("SELECT paper_id FROM exam_attempt WHERE id=? FOR UPDATE", Long.class, attemptId);
+        scopes.requireContentOwner(actor, "exam_paper", paperId);
+        String status = jdbc.queryForObject("SELECT status FROM exam_attempt WHERE id=?", String.class, attemptId);
+        if (!"SUBMITTED".equals(status)) throw bad("答卷尚未提交，不能阅卷");
+        for (ExamDtos.GradeItem item : body.items()) {
+            Integer max = jdbc.query("SELECT points FROM exam_paper_question WHERE id=? AND paper_id=? AND question_type='subjective'", (rs, row) -> rs.getInt(1), item.paperQuestionId(), paperId).stream().findFirst().orElseThrow(() -> bad("只能为本试卷的主观题阅卷"));
+            if (item.score() > max) throw bad("主观题得分不能超过题目分值");
+            int updated = jdbc.update("UPDATE exam_answer SET score=?,grader_id=?,grade_comment=?,graded_at=CURRENT_TIMESTAMP,version=version+1 WHERE attempt_id=? AND paper_question_id=? AND version=?", item.score(), actor, item.comment(), attemptId, item.paperQuestionId(), item.version());
+            if (updated != 1) throw new ApiException(HttpStatus.CONFLICT, "GRADE_VERSION_CONFLICT", "阅卷记录已被其他管理员更新，请刷新后重试");
+        }
+        finalizeGradedAttempt(attemptId, actor);
+        return grading(attemptId, actor);
+    }
+
+    private void finalizeGradedAttempt(long attemptId, long userId) {
+        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.question_type,pq.answer_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), rs.getString("question_type"), parseInts(rs.getString("answer_json")), 0), attemptId);
+        int earned = 0; boolean pending = false;
+        for (ExamQuestionRow question : questions) {
+            List<Map<String,Object>> rows = jdbc.queryForList("SELECT score FROM exam_answer WHERE attempt_id=? AND paper_question_id=?", attemptId, question.id());
+            Integer score = rows.isEmpty() ? null : (Integer) rows.get(0).get("score");
+            if (score == null) pending = true; else earned += score;
+        }
+        int total = integer("SELECT COALESCE(SUM(points),0) FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=?", attemptId);
+        int score = total == 0 ? 0 : Math.round(earned * 100f / total);
+        int pass = integer("SELECT pass_score FROM exam_paper ep JOIN exam_attempt ea ON ea.paper_id=ep.id WHERE ea.id=?", attemptId);
+        jdbc.update("UPDATE exam_attempt SET grading_status=?,score=?,passed=? WHERE id=? AND status='SUBMITTED'", pending ? "PENDING" : "COMPLETE", pending ? null : score, pending ? null : score >= pass, attemptId);
+        if (!pending) {
+            long employeeId = jdbc.queryForObject("SELECT user_id FROM exam_attempt WHERE id=?", Long.class, attemptId);
+            plans.refreshForExam(jdbc.queryForObject("SELECT paper_id FROM exam_attempt WHERE id=?", Long.class, attemptId), employeeId);
+        }
     }
 
     @Transactional(isolation = Isolation.READ_COMMITTED)
@@ -202,9 +284,13 @@ public class ExamRepository {
         long remaining = 0;
         Timestamp start = jdbc.queryForObject("SELECT started_at FROM exam_attempt WHERE id=?", Timestamp.class, attemptId);
         if (start != null && "IN_PROGRESS".equals(item.get().status())) remaining = Math.max(0, exam.exam().durationMinutes() * 60L - (Instant.now().getEpochSecond() - start.toInstant().getEpochSecond()));
-        Map<Long, List<Integer>> answers = new LinkedHashMap<>();
-        jdbc.queryForList("SELECT paper_question_id,answer_json FROM exam_answer WHERE attempt_id=? ORDER BY paper_question_id", attemptId).forEach(row -> answers.put(((Number) row.get("paper_question_id")).longValue(), parseInts(String.valueOf(row.get("answer_json")))));
-        return Optional.of(new ExamDtos.AttemptDetail(item.get(), paperQuestions(paperId, "SUBMITTED".equals(item.get().status())), remaining, answers));
+        Map<Long, List<Integer>> answers = new LinkedHashMap<>(); Map<Long, String> texts = new LinkedHashMap<>();
+        jdbc.queryForList("SELECT paper_question_id,answer_json,answer_text FROM exam_answer WHERE attempt_id=? ORDER BY paper_question_id", attemptId).forEach(row -> {
+            long questionId = ((Number) row.get("paper_question_id")).longValue();
+            answers.put(questionId, parseInts(String.valueOf(row.get("answer_json"))));
+            if (row.get("answer_text") != null) texts.put(questionId, String.valueOf(row.get("answer_text")));
+        });
+        return Optional.of(new ExamDtos.AttemptDetail(item.get(), paperQuestions(paperId, "SUBMITTED".equals(item.get().status())), remaining, answers, texts));
     }
 
     public ExamDtos.AttemptView attempt(long id) { return jdbc.queryForObject("SELECT ea.id,ea.paper_id,ep.title,ea.status,ea.score,ea.passed,ea.started_at,ea.submitted_at FROM exam_attempt ea JOIN exam_paper ep ON ep.id=ea.paper_id WHERE ea.id=?", (rs, row) -> new ExamDtos.AttemptView(rs.getLong("id"),rs.getLong("paper_id"),rs.getString("title"),rs.getString("status"), (Integer) rs.getObject("score"), (Boolean) rs.getObject("passed"),rs.getTimestamp("started_at").toInstant(),rs.getTimestamp("submitted_at") == null ? null : rs.getTimestamp("submitted_at").toInstant()), id); }
@@ -214,19 +300,25 @@ public class ExamRepository {
         // terminal result even when two tabs submit at the same time.
         String status = jdbc.queryForObject("SELECT status FROM exam_attempt WHERE id=? AND user_id=? FOR UPDATE", String.class, attemptId, userId);
         if ("SUBMITTED".equals(status)) return attempt(attemptId);
-        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.answer_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), parseInts(rs.getString("answer_json")), 0), attemptId);
-        int earned = 0;
+        List<ExamQuestionRow> questions = jdbc.query("SELECT pq.id,pq.points,pq.question_type,pq.answer_json FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=? ORDER BY pq.sort_no", (rs, row) -> new ExamQuestionRow(rs.getLong("id"), rs.getInt("points"), rs.getString("question_type"), parseInts(rs.getString("answer_json")), 0), attemptId);
+        int earned = 0; boolean pending = false;
         for (ExamQuestionRow question : questions) {
-            List<Integer> answer = jdbc.query("SELECT answer_json FROM exam_answer WHERE attempt_id=? AND paper_question_id=?", (rs, row) -> parseInts(rs.getString("answer_json")), attemptId, question.id()).stream().findFirst().orElse(List.of());
-            boolean correct = same(answer, question.answer());
-            int score = correct ? question.points() : 0;
-            earned += score;
-            jdbc.update("UPDATE exam_answer SET is_correct=?,score=? WHERE attempt_id=? AND paper_question_id=?", correct, score, attemptId, question.id());
+            if ("subjective".equals(question.type())) {
+                List<Map<String,Object>> rows = jdbc.queryForList("SELECT score FROM exam_answer WHERE attempt_id=? AND paper_question_id=?", attemptId, question.id());
+                Integer score = rows.isEmpty() ? null : (Integer) rows.get(0).get("score");
+                if (score == null) pending = true; else earned += score;
+            } else {
+                List<Integer> answer = jdbc.query("SELECT answer_json FROM exam_answer WHERE attempt_id=? AND paper_question_id=?", (rs, row) -> parseInts(rs.getString("answer_json")), attemptId, question.id()).stream().findFirst().orElse(List.of());
+                boolean correct = same(answer, question.answer());
+                int score = correct ? question.points() : 0;
+                earned += score;
+                jdbc.update("UPDATE exam_answer SET is_correct=?,score=? WHERE attempt_id=? AND paper_question_id=?", correct, score, attemptId, question.id());
+            }
         }
         int total = integer("SELECT COALESCE(SUM(points),0) FROM exam_paper_question pq JOIN exam_attempt ea ON ea.paper_id=pq.paper_id WHERE ea.id=?", attemptId);
         int score = total == 0 ? 0 : Math.round(earned * 100f / total);
         int pass = integer("SELECT pass_score FROM exam_paper ep JOIN exam_attempt ea ON ea.paper_id=ep.id WHERE ea.id=?", attemptId);
-        jdbc.update("UPDATE exam_attempt SET status='SUBMITTED',score=?,passed=?,submitted_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='IN_PROGRESS'", score, score >= pass, attemptId, userId);
+        jdbc.update("UPDATE exam_attempt SET status='SUBMITTED',grading_status=?,score=?,passed=?,submitted_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND status='IN_PROGRESS'", pending ? "PENDING" : "COMPLETE", pending ? null : score, pending ? null : score >= pass, attemptId, userId);
         plans.refreshForExam(attempt(attemptId).paperId(), userId);
         return attempt(attemptId);
     }
@@ -258,12 +350,16 @@ public class ExamRepository {
     public void expireAttempt(long attemptId, long userId) { expireIfNeeded(attemptId, userId); }
 
     public record ExpiredAttempt(long id, long userId) { }
-    private ExamDtos.QuestionView question(java.sql.ResultSet rs) throws java.sql.SQLException { return new ExamDtos.QuestionView(rs.getLong("id"),rs.getString("question_type"),rs.getString("stem"),parseStrings(rs.getString("options_json")),parseInts(rs.getString("answer_json")),rs.getString("analysis"),rs.getString("category"),rs.getString("difficulty"),rs.getString("status"),rs.getLong("version")); }
+    private ExamDtos.QuestionView question(java.sql.ResultSet rs) throws java.sql.SQLException { return new ExamDtos.QuestionView(rs.getLong("id"),rs.getString("question_type"),rs.getString("stem"),parseStrings(rs.getString("options_json")),parseInts(rs.getString("answer_json")),rs.getString("analysis"),rs.getString("category"),rs.getString("difficulty"),rs.getString("status"),rs.getLong("version"),rs.getString("reference_answer"),rs.getString("grading_guide")); }
     private ExamDtos.ExamView exam(java.sql.ResultSet rs) throws java.sql.SQLException { return new ExamDtos.ExamView(rs.getLong("id"),rs.getString("title"),rs.getString("category"),rs.getInt("duration_minutes"),rs.getInt("pass_score"),rs.getObject("deadline",LocalDate.class),rs.getString("status"),rs.getInt("question_count"),rs.getInt("total_points"),rs.getInt("attempt_count"),rs.getLong("version")); }
-    private ExamDtos.PaperQuestionView paperQuestion(java.sql.ResultSet rs) throws java.sql.SQLException { return new ExamDtos.PaperQuestionView(rs.getLong("id"),rs.getLong("question_id"),rs.getString("question_type"),rs.getString("stem"),parseStrings(rs.getString("options_json")),rs.getInt("points"),rs.getString("analysis")); }
-    private record ExamQuestionRow(long id,int points,List<Integer> answer,int optionCount) { }
+    private ExamDtos.PaperQuestionView paperQuestion(java.sql.ResultSet rs) throws java.sql.SQLException { return new ExamDtos.PaperQuestionView(rs.getLong("id"),rs.getLong("question_id"),rs.getString("question_type"),rs.getString("stem"),parseStrings(rs.getString("options_json")),rs.getInt("points"),rs.getString("analysis"),rs.getString("reference_answer"),rs.getString("grading_guide")); }
+    private record ExamQuestionRow(long id,int points,String type,List<Integer> answer,int optionCount) { }
     private record AttemptTiming(String status, Instant startedAt, int durationMinutes) { }
-    private void validateQuestion(String type,List<String> options,List<Integer> answer){if(!Set.of("single","multiple","boolean").contains(type))throw bad("题目类型仅支持 single、multiple、boolean");if(options==null||options.size()<2||options.stream().map(String::trim).filter(s->!s.isBlank()).distinct().count()!=options.size())throw bad("选项至少 2 个且不能重复");List<Integer> normalized=normalize(answer);if(normalized.stream().anyMatch(i->i<0||i>=options.size()))throw bad("答案选项索引不合法");if(("single".equals(type)||"boolean".equals(type))&&normalized.size()!=1)throw bad("单选和判断题只能有一个答案");if("multiple".equals(type)&&normalized.size()<2)throw bad("多选题至少需要两个答案");if("boolean".equals(type)&&options.size()!=2)throw bad("判断题必须有两个选项");}
+    private void validateQuestion(ExamDtos.QuestionRequest body){
+        String type=body.type(); List<String> options=body.options(); List<Integer> answer=body.answer();
+        if("subjective".equals(type)){ if(blank(body.referenceAnswer(),"").isBlank() && blank(body.gradingGuide(),"").isBlank()) throw bad("主观题至少需要参考答案或评分标准"); return; }
+        if(!Set.of("single","multiple","boolean").contains(type))throw bad("题目类型仅支持 single、multiple、boolean、subjective");if(options==null||options.size()<2||options.stream().map(String::trim).filter(s->!s.isBlank()).distinct().count()!=options.size())throw bad("选项至少 2 个且不能重复");List<Integer> normalized=normalize(answer);if(normalized.isEmpty()||normalized.stream().anyMatch(i->i<0||i>=options.size()))throw bad("答案选项索引不合法");if(("single".equals(type)||"boolean".equals(type))&&normalized.size()!=1)throw bad("单选和判断题只能有一个答案");if("multiple".equals(type)&&normalized.size()<2)throw bad("多选题至少需要两个答案");if("boolean".equals(type)&&options.size()!=2)throw bad("判断题必须有两个选项");
+    }
     private void validateExam(ExamDtos.ExamRequest b){if(b.deadline()!=null&&b.deadline().isBefore(LocalDate.now()))throw bad("截止日期不能早于今天");Set<Long> ids=new HashSet<>();int points=0;for(var q:b.questions()){if(!ids.add(q.questionId()))throw bad("试卷不能重复引用题目");points+=q.points();}if(points!=100)throw bad("试卷总分必须为 100");}
     private static ApiException bad(String m){return new ApiException(HttpStatus.BAD_REQUEST,"INVALID_REQUEST",m);}
     private int count(String sql,Object...args){return integer(sql,args);}

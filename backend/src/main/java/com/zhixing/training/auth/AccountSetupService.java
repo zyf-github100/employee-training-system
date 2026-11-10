@@ -51,7 +51,7 @@ public class AccountSetupService {
         if(tokens.isEmpty()||user.activated||!"ACTIVE".equals(user.status)||user.version!=tokens.get(0)[1])throw invalid();
         try {long issuer=tokens.get(0)[0];scopes.requireUser(issuer,id);if(!scopes.resolve(issuer).superAdmin()&&!"EMPLOYEE".equals(user.role))throw invalid();}
         catch(ApiException e){throw invalid();}
-        jdbc.update("UPDATE sys_user SET password_hash=?,activated=TRUE,failed_login_count=0,locked_until=NULL,password_changed_at=CURRENT_TIMESTAMP,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",passwords.encode(body.newPassword()),id);
+        jdbc.update("UPDATE sys_user SET password_hash=?,activated=TRUE,must_change_password=FALSE,failed_login_count=0,locked_until=NULL,password_changed_at=CURRENT_TIMESTAMP,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",passwords.encode(body.newPassword()),id);
         jdbc.update("UPDATE account_setup_token SET consumed_at=CURRENT_TIMESTAMP WHERE user_id=?",id);sessions.revokeAll(id);return id;
     }
     private Account lock(long id) {return jdbc.query("SELECT * FROM sys_user WHERE id=? FOR UPDATE",(rs,row)->new Account(rs.getString("employee_no"),rs.getString("role_code"),rs.getString("status"),rs.getBoolean("activated"),rs.getBoolean("super_admin"),rs.getLong("version")),id).stream().findFirst().orElseThrow(AccountSetupService::invalid);}

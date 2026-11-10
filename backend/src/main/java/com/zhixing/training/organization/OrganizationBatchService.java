@@ -10,6 +10,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
+import com.zhixing.training.api.PageResult;
 import java.util.*;
 import static com.zhixing.training.organization.OrganizationBatchDtos.*;
 
@@ -41,6 +42,7 @@ public class OrganizationBatchService {
         if(!scope.containsDepartment(body.departmentId())) throw DataScopeService.denied();
         requireActiveDepartment(body.departmentId());
         var employees=employees(actor, targets, scope);
+        var before = new ArrayList<>(employees);
         int changed=0, cleared=0;
         for(var employee:employees) {
             String nextTitle=body.updateJobTitle()?title:employee.jobTitle();
@@ -51,7 +53,7 @@ public class OrganizationBatchService {
             sessions.revokeAll(employee.id());
             changed++;
         }
-        return store(actor, requestId, "TRANSFER", payload, new Result(requestId, targets.size(), changed, cleared));
+        return store(actor, requestId, "TRANSFER", payload, new Result(requestId, targets.size(), changed, cleared), before, snapshot(actor, targets));
     }
 
     @Transactional(isolation=Isolation.READ_COMMITTED)
@@ -69,6 +71,7 @@ public class OrganizationBatchService {
         if(previous!=null) return previous;
         for(long department:custom) requireActiveDepartment(department);
         var employees=employees(actor, targets, scope);
+        var before = new ArrayList<>(employees);
         int changed=0;
         for(var employee:employees) {
             if(employee.roleCode().equals(body.roleCode()) && employee.dataScope().equals(body.dataScope())
@@ -80,7 +83,53 @@ public class OrganizationBatchService {
             sessions.revokeAll(employee.id());
             changed++;
         }
-        return store(actor, requestId, "ROLES", payload, new Result(requestId, targets.size(), changed, 0));
+        return store(actor, requestId, "ROLES", payload, new Result(requestId, targets.size(), changed, 0), before, snapshot(actor, targets));
+    }
+
+    public PageResult<HistoryView> history(long actor, int pageNo, int pageSize, String operation) {
+        if (pageNo < 1 || pageSize < 1 || pageSize > 100) throw bad("分页参数不合法");
+        var scope = scopes.resolve(actor);
+        String where = scope.superAdmin() ? "WHERE (?='' OR operation=?)" : "WHERE actor_id=? AND (?='' OR operation=?)";
+        Object[] countArgs = scope.superAdmin() ? new Object[]{operation, operation} : new Object[]{actor, operation, operation};
+        long total = jdbc.queryForObject("SELECT COUNT(*) FROM organization_batch " + where, Long.class, countArgs);
+        List<Object> args = new ArrayList<>(Arrays.asList(countArgs));
+        args.add(pageSize); args.add((pageNo - 1) * pageSize);
+        List<HistoryView> list = jdbc.query("SELECT request_id,actor_id,operation,created_at,result_json,before_json,after_json,rolled_back_at,rollback_result_json FROM organization_batch " + where + " ORDER BY created_at DESC LIMIT ? OFFSET ?", (rs, row) -> historyRow(rs), args.toArray());
+        return new PageResult<>(list, pageNo, pageSize, total);
+    }
+
+    @Transactional(isolation=Isolation.READ_COMMITTED)
+    public HistoryView rollback(long actor, String requestId, RollbackRequest body) {
+        scopes.lockMutations();
+        var row = jdbc.query("SELECT request_id,actor_id,operation,created_at,result_json,before_json,after_json,rolled_back_at,rollback_result_json FROM organization_batch WHERE request_id=? FOR UPDATE", (rs, r) -> historyRow(rs), requestId).stream().findFirst().orElseThrow(() -> new ApiException(HttpStatus.NOT_FOUND, "BATCH_NOT_FOUND", "批量变更记录不存在"));
+        if (row.actorId() != actor && !scopes.resolve(actor).superAdmin()) throw DataScopeService.denied();
+        if (row.rolledBackAt() != null) return row;
+        if (row.before().isEmpty() || row.after().isEmpty()) throw bad("该记录没有可回滚的变更快照");
+        var before = row.before(); var after = row.after();
+        if ("ROLES".equals(row.operation())) scopes.requireSuper(actor);
+        for (int i = 0; i < before.size(); i++) {
+            var old = before.get(i); var expected = after.get(i);
+            scopes.requireUser(actor, old.id());
+            var current = organization.employee(actor, old.id());
+            if (current.version() != expected.version() || current.id() != expected.id()) throw new ApiException(HttpStatus.CONFLICT, "ROLLBACK_CONFLICT", "目标账号已发生其他变更，本次未回滚任何账号");
+            if (current.superAdmin() || current.id() == actor) throw bad("批量回滚不包含本人或超级管理员账号");
+        }
+        int changed = 0;
+        for (int i = 0; i < before.size(); i++) {
+            var old = before.get(i);
+            if ("TRANSFER".equals(row.operation())) {
+                jdbc.update("UPDATE sys_user SET department_id=?,job_title=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND version=?", old.departmentId(), old.jobTitle(), old.id(), after.get(i).version());
+                organization.clearInvalidLeadership(old.id());
+            } else {
+                jdbc.update("UPDATE sys_user SET role_code=?,super_admin=?,data_scope=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=? AND version=?", old.roleCode(), old.superAdmin(), old.dataScope(), old.id(), after.get(i).version());
+                jdbc.update("DELETE FROM user_scope_department WHERE user_id=?", old.id());
+                for (long department : old.customDepartmentIds()) jdbc.update("INSERT INTO user_scope_department(user_id,department_id) VALUES(?,?)", old.id(), department);
+            }
+            sessions.revokeAll(old.id()); changed++;
+        }
+        String result = encode(new Result(requestId, before.size(), changed, 0));
+        jdbc.update("UPDATE organization_batch SET rolled_back_at=CURRENT_TIMESTAMP(6),rollback_result_json=? WHERE request_id=?", result, requestId);
+        return history(requestId, actor);
     }
 
     // Validate every target while locking rows in a deterministic order, before writing any employee.
@@ -113,11 +162,23 @@ public class OrganizationBatchService {
         }, id).stream().findFirst().orElse(null);
     }
 
-    private Result store(long actor, String id, String operation, String payload, Result result) {
-        jdbc.update("INSERT INTO organization_batch(request_id,actor_id,operation,payload_hash,payload_json,result_json) VALUES(?,?,?,?,?,?)",
-                id, actor, operation, AuthService.hash(payload), payload, encode(result));
+    private Result store(long actor, String id, String operation, String payload, Result result, Object before, Object after) {
+        jdbc.update("INSERT INTO organization_batch(request_id,actor_id,operation,payload_hash,payload_json,result_json,before_json,after_json) VALUES(?,?,?,?,?,?,?,?)",
+                id, actor, operation, AuthService.hash(payload), payload, encode(result), encode(before), encode(after));
         return result;
     }
+
+    private List<OrganizationDtos.Employee> snapshot(long actor, List<Target> targets) { return targets.stream().map(target -> organization.employee(actor, target.id())).toList(); }
+    private HistoryView historyRow(java.sql.ResultSet rs) throws java.sql.SQLException {
+        try {
+            return new HistoryView(rs.getString("request_id"), rs.getLong("actor_id"), rs.getString("operation"), rs.getTimestamp("created_at").toInstant(),
+                    json.readValue(rs.getString("result_json"), Result.class),
+                    rs.getString("before_json") == null ? List.of() : json.readValue(rs.getString("before_json"), new com.fasterxml.jackson.core.type.TypeReference<List<OrganizationDtos.Employee>>() {}),
+                    rs.getString("after_json") == null ? List.of() : json.readValue(rs.getString("after_json"), new com.fasterxml.jackson.core.type.TypeReference<List<OrganizationDtos.Employee>>() {}),
+                    rs.getTimestamp("rolled_back_at") == null ? null : rs.getTimestamp("rolled_back_at").toInstant(), rs.getString("rollback_result_json"));
+        } catch (Exception e) { throw new IllegalStateException(e); }
+    }
+    private HistoryView history(String requestId, long actor) { return jdbc.query("SELECT request_id,actor_id,operation,created_at,result_json,before_json,after_json,rolled_back_at,rollback_result_json FROM organization_batch WHERE request_id=?", (rs,row)->historyRow(rs), requestId).stream().findFirst().orElseThrow(); }
 
     private void requireActiveDepartment(long id) {
         if(jdbc.queryForObject("SELECT COUNT(*) FROM org_department WHERE id=? AND status='ACTIVE'", Integer.class, id)!=1)

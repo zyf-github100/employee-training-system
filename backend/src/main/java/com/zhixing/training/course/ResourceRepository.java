@@ -55,7 +55,8 @@ public class ResourceRepository {
     public Optional<ResourceRecord> delete(long resourceId) {
         Optional<ResourceRecord> record = findRecord(resourceId);
         if (record.isEmpty()) return Optional.empty();
-        jdbc.update("DELETE FROM course_resource WHERE id=?", resourceId);
+        if ("PUBLISHED".equals(record.get().courseStatus())) jdbc.update("UPDATE course_resource SET status='ARCHIVED' WHERE id=?", resourceId);
+        else jdbc.update("DELETE FROM course_resource WHERE id=?", resourceId);
         return record;
     }
 

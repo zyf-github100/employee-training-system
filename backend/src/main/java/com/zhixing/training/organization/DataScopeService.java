@@ -48,7 +48,7 @@ public class DataScopeService {
         if(jdbc.queryForObject("SELECT COUNT(*) FROM sys_user u WHERE u.id=? AND "+scope.userCondition("u"),Integer.class,target)!=1) throw denied();
     }
     public void requireContentOwner(long actor,String table,long id) {
-        if(!Set.of("training_plan","exam_paper").contains(table)) throw new IllegalArgumentException("Invalid content table");
+        if(!Set.of("training_plan","exam_paper","course").contains(table)) throw new IllegalArgumentException("Invalid content table");
         if(!resolve(actor).all() && jdbc.queryForObject("SELECT COUNT(*) FROM "+table+" WHERE id=? AND created_by=?",Integer.class,id,actor)!=1) throw denied();
     }
     private static String ids(List<Long> values) { return values.stream().map(String::valueOf).collect(java.util.stream.Collectors.joining(",")); }

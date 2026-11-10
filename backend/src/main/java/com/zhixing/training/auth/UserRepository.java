@@ -24,7 +24,7 @@ public class UserRepository {
         return new UserRecord(rs.getLong("id"), rs.getString("employee_no"), rs.getString("password_hash"), rs.getString("name"),
                 departmentId, rs.getString("department_name"), rs.getString("job_title"), rs.getString("email"),
                 rs.getString("phone"), rs.getString("role_code"), rs.getString("status"), rs.getBoolean("activated"),
-                rs.getInt("failed_login_count"), locked == null ? null : locked.toInstant(), rs.getLong("version"));
+                rs.getInt("failed_login_count"), locked == null ? null : locked.toInstant(), rs.getBoolean("must_change_password"), rs.getLong("version"));
     }
     private static final String BASE = "SELECT u.*, d.name department_name FROM sys_user u LEFT JOIN org_department d ON d.id=u.department_id ";
     public Optional<UserRecord> findByEmployeeNo(String employeeNo) {
@@ -51,11 +51,11 @@ public class UserRepository {
                 name, email, phone, jobTitle, id, version) == 1;
     }
     public void updatePassword(long id, String hash) {
-        jdbc.update("UPDATE sys_user SET password_hash=?,password_changed_at=CURRENT_TIMESTAMP,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?", hash, id);
+        jdbc.update("UPDATE sys_user SET password_hash=?,password_changed_at=CURRENT_TIMESTAMP,must_change_password=FALSE,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?", hash, id);
     }
     public long insert(String employeeNo, String hash, String name, String role, Long departmentId) {
         KeyHolder key = new GeneratedKeyHolder();
-        jdbc.update(conn -> { PreparedStatement ps = conn.prepareStatement("INSERT INTO sys_user(employee_no,password_hash,name,role_code,department_id) VALUES(?,?,?,?,?)", new String[]{"id"});
+        jdbc.update(conn -> { PreparedStatement ps = conn.prepareStatement("INSERT INTO sys_user(employee_no,password_hash,name,role_code,department_id,password_changed_at,must_change_password) VALUES(?,?,?,?,?,CURRENT_TIMESTAMP,FALSE)", new String[]{"id"});
             ps.setString(1, employeeNo); ps.setString(2, hash); ps.setString(3, name); ps.setString(4, role); if (departmentId == null) ps.setNull(5, java.sql.Types.BIGINT); else ps.setLong(5, departmentId); return ps; }, key);
         return key.getKey().longValue();
     }

@@ -476,6 +476,75 @@
   display: flex;
   gap: 14px;
 }
+.live-content .course-engagement {
+  margin-top: 22px;
+}
+.live-content .compact-heading {
+  margin-bottom: 20px;
+}
+.live-content .engagement-grid {
+  display: grid;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(0, 1.2fr);
+  gap: 24px;
+}
+.live-content .engagement-form,
+.live-content .discussion-compose {
+  display: grid;
+  gap: 12px;
+}
+.live-content .engagement-form textarea,
+.live-content .discussion-compose textarea {
+  min-height: 90px;
+  resize: vertical;
+}
+.live-content .rating-picker {
+  display: flex;
+  gap: 3px;
+}
+.live-content .rating-star {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #cdd9d2;
+  font-size: 25px;
+  cursor: pointer;
+}
+.live-content .rating-star.active {
+  color: #d89b3c;
+}
+.live-content .review-list,
+.live-content .discussion-area {
+  display: grid;
+  gap: 12px;
+}
+.live-content .review-item,
+.live-content .discussion-item {
+  padding: 12px 0;
+  border-bottom: 1px solid #edf2ee;
+}
+.live-content .review-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #719184;
+  font-size: 12px;
+}
+.live-content .review-item p,
+.live-content .discussion-item p {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.live-content .discussion-area {
+  margin-top: 26px;
+  padding-top: 22px;
+  border-top: 1px solid #edf2ee;
+}
+.live-content .discussion-compose {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+}
 .live-content .print-certificate {
   display: none;
 }
@@ -502,6 +571,7 @@
   .live-content .live-dashboard-grid,
   .live-content .profile-grid,
   .live-content .live-learning-grid,
+  .live-content .engagement-grid,
   .live-content .stat-grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -538,6 +608,9 @@
   }
   .live-content .panel-heading {
     flex-wrap: wrap;
+  }
+  .live-content .discussion-compose {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 @media print {

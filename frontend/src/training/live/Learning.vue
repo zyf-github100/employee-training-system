@@ -4,7 +4,9 @@
   import {
     api,
     currentUser,
+    type CourseDiscussion,
     type CourseDetail,
+    type CourseReviewSummary,
     type Progress,
     type Resource
   } from '../../connected/api'
@@ -13,6 +15,11 @@
   const id = Number(useRoute().params.id),
     detail = ref<CourseDetail>(),
     progress = ref<Progress[]>([]),
+    reviews = ref<CourseReviewSummary>(),
+    discussions = ref<CourseDiscussion[]>([]),
+    reviewRating = ref(0),
+    reviewContent = ref(''),
+    discussionContent = ref(''),
     selected = ref(0)
   const loading = ref(true),
     busy = ref(false),
@@ -61,10 +68,14 @@
     loading.value = true
     error.value = ''
     try {
-      ;[detail.value, progress.value] = await Promise.all([
+      ;[detail.value, progress.value, reviews.value, discussions.value] = await Promise.all([
         api.courseDetail(id),
-        api.courseProgress(id)
+        api.courseProgress(id),
+        api.courseReviews(id),
+        api.courseDiscussions(id)
       ])
+      reviewRating.value = reviews.value.mine?.rating ?? 0
+      reviewContent.value = reviews.value.mine?.content ?? ''
       selected.value ||=
         detail.value.chapters.find(
           (c) => !progress.value.some((p) => p.chapterId === c.id && p.completed)
@@ -76,6 +87,45 @@
       error.value = errorMessage(e)
     } finally {
       loading.value = false
+    }
+  }
+  async function saveReview() {
+    if (!reviewRating.value) {
+      error.value = '请选择课程评分'
+      return
+    }
+    busy.value = true
+    error.value = ''
+    try {
+      await api.saveCourseReview(id, {
+        rating: reviewRating.value,
+        content: reviewContent.value.trim(),
+        version: reviews.value?.mine?.version ?? 0
+      })
+      reviews.value = await api.courseReviews(id)
+      reviewRating.value = reviews.value.mine?.rating ?? reviewRating.value
+      reviewContent.value = reviews.value.mine?.content ?? reviewContent.value
+      notice.value = '课程评价已保存'
+    } catch (e) {
+      error.value = errorMessage(e)
+    } finally {
+      busy.value = false
+    }
+  }
+  async function postDiscussion() {
+    const content = discussionContent.value.trim()
+    if (!content) return
+    busy.value = true
+    error.value = ''
+    try {
+      await api.createCourseDiscussion(id, content)
+      discussionContent.value = ''
+      discussions.value = await api.courseDiscussions(id)
+      notice.value = '讨论已发布'
+    } catch (e) {
+      error.value = errorMessage(e)
+    } finally {
+      busy.value = false
     }
   }
   async function enroll() {
@@ -312,6 +362,42 @@
             ></template
           ><p v-else class="empty-state">请先报名课程，再开始本章学习。</p></article
         ><div v-else class="empty-state">课程暂未添加章节，请联系培训管理员。</div></div
+      ><section v-if="reviews" class="panel course-engagement"
+        ><div class="section-heading compact-heading"
+          ><div><span class="eyebrow">COURSE FEEDBACK</span><h2>课程评价与讨论</h2></div
+          ><strong>{{ reviews.averageRating.toFixed(1) }} 分 · {{ reviews.reviewCount }} 条评价</strong></div
+        ><div class="engagement-grid"
+          ><form class="engagement-form" @submit.prevent="saveReview"
+            ><h3>留下你的评价</h3
+            ><div class="rating-picker" aria-label="课程评分"
+              ><button
+                v-for="star in 5"
+                :key="star"
+                type="button"
+                class="rating-star"
+                :class="{ active: star <= reviewRating }"
+                :aria-label="`${star} 分`"
+                @click="reviewRating = star"
+                >★</button
+              ></div
+            ><textarea v-model="reviewContent" maxlength="1000" placeholder="说说这门课程对你的帮助（可选）" />
+            ><button class="primary-button" :disabled="busy">保存评价</button></form
+          ><div class="review-list"
+            ><article v-for="review in reviews.reviews" :key="review.id" class="review-item"
+              ><div class="review-meta"><strong>{{ review.authorName }}</strong><span>{{ '★'.repeat(review.rating) }}</span></div
+              ><p v-if="review.content">{{ review.content }}</p></article
+            ><p v-if="!reviews.reviews.length" class="muted">还没有评价，来写第一条吧。</p></div
+        ></div
+        ><div class="discussion-area"
+          ><h3>课程讨论</h3
+          ><form class="discussion-compose" @submit.prevent="postDiscussion"
+            ><textarea v-model="discussionContent" maxlength="2000" placeholder="提问、分享学习心得或回复课程内容" />
+            ><button class="outline-button" :disabled="busy || !discussionContent.trim()">发布讨论</button></form
+          ><article v-for="item in discussions" :key="item.id" class="discussion-item"
+            ><div class="review-meta"><strong>{{ item.authorName }}</strong><time>{{ new Date(item.createdAt).toLocaleString() }}</time></div
+            ><p>{{ item.content }}</p></article
+          ><p v-if="!discussions.length" class="muted">暂时没有讨论。</p></div
+      ></section
       ></template
     ></section
   >

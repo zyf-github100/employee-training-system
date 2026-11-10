@@ -2,7 +2,7 @@
   import { onMounted, onBeforeUnmount, reactive, ref } from 'vue'
   import { useRoute, onBeforeRouteLeave } from 'vue-router'
   import { ElMessage, ElMessageBox } from 'element-plus'
-  import { api, type Chapter, type CourseDetail, type Resource } from '../../../connected/api'
+  import { api, type Chapter, type CourseDetail, type Resource, type CourseRevision } from '../../../connected/api'
   import { errorMessage } from '../session'
   const id = Number(useRoute().params.id)
   const detail = ref<CourseDetail | null>(null),
@@ -19,6 +19,7 @@
   const preview = ref<Resource | null>(null),
     previewUrl = ref(''),
     previewLoading = ref(false)
+  const revisions = ref<CourseRevision[]>([]), revisionsOpen = ref(false)
   let previewRequest = 0
   async function load() {
     loading.value = true
@@ -30,6 +31,15 @@
     } finally {
       loading.value = false
     }
+  }
+  async function openRevisions() {
+    try { revisions.value = await api.courseRevisions(id); revisionsOpen.value = true } catch (e) { ElMessage.error(errorMessage(e)) }
+  }
+  async function restoreRevision(revision: CourseRevision) {
+    if (!detail.value || revision.current) return
+    try { await ElMessageBox.confirm(`恢复到第 ${revision.revisionNo} 个发布版本？当前草稿内容会被覆盖。`, '恢复课程版本', { type: 'warning', confirmButtonText: '恢复', cancelButtonText: '取消' }) } catch { return }
+    busy.value = true
+    try { await api.restoreCourseRevision(id, revision.id, detail.value.course.version); revisionsOpen.value = false; await load(); ElMessage.success('课程版本已恢复') } catch (e) { ElMessage.error(errorMessage(e)) } finally { busy.value = false }
   }
   function edit(value?: Chapter) {
     chapterId.value = value?.id ?? null
@@ -147,7 +157,7 @@
             >{{ detail.course.category || '通用培训' }} · {{ detail.chapters.length }} 个章节 ·
             {{ detail.course.status === 'PUBLISHED' ? '已发布' : '草稿' }}</p
           ></div
-        ><button class="primary-button" :disabled="busy" @click="edit()">添加章节</button></div
+        ><div class="section-actions"><button class="outline-button" :disabled="busy" @click="openRevisions">版本治理</button><button class="primary-button" :disabled="busy" @click="edit()">添加章节</button></div></div
       >
       <div class="admin-info-note"
         ><AppIcon name="book" /><span
@@ -191,6 +201,13 @@
         ></div
       >
     </template>
+    <el-dialog v-model="revisionsOpen" title="课程版本治理" width="680px" class="responsive-dialog">
+      <p class="muted">已发布版本会作为员工学习快照。编辑草稿后，需要再次发布才会对员工生效。</p>
+      <div v-if="!revisions.length" class="empty-state">还没有发布快照。</div>
+      <article v-for="revision in revisions" :key="revision.id" class="admin-paper-question">
+        <div class="admin-chapter-heading"><div><h3>版本 {{ revision.revisionNo }} <small>{{ revision.current ? '当前生效' : '' }}</small></h3><p class="muted">{{ revision.releaseNote }} · {{ new Date(revision.createdAt).toLocaleString('zh-CN') }}</p></div><button class="outline-button" :disabled="busy || revision.current" @click="restoreRevision(revision)">恢复</button></div>
+      </article>
+    </el-dialog>
     <el-dialog
       v-model="editor"
       :title="chapterId ? '编辑章节' : '添加章节'"

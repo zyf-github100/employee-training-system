@@ -29,20 +29,22 @@ public class LearningRepository {
     private static final int MAX_WATCHED_SECONDS = 24 * 3600;
     private final JdbcTemplate jdbc;
     private final PlanRepository plans;
+    private final CourseVersionService revisions;
     private final double completionRatio;
     private final int minSeconds;
 
-    public LearningRepository(JdbcTemplate jdbc, PlanRepository plans,
+    public LearningRepository(JdbcTemplate jdbc, PlanRepository plans, CourseVersionService revisions,
                               @Value("${zhixing.study.completion-ratio:0.8}") double completionRatio,
                               @Value("${zhixing.study.min-seconds:60}") int minSeconds) {
         this.jdbc = jdbc;
         this.plans = plans;
+        this.revisions = revisions;
         this.completionRatio = completionRatio;
         this.minSeconds = minSeconds;
     }
 
     public List<LearningDtos.ChapterView> chapters(long courseId, boolean publishedOnly) {
-        String visibility = publishedOnly ? " AND co.status='PUBLISHED'" : "";
+        String visibility = publishedOnly ? " AND co.status='PUBLISHED' AND c.draft_visible=TRUE" : " AND c.draft_visible=TRUE";
         List<LearningDtos.ChapterView> chapters = jdbc.query("SELECT c.id,c.course_id,c.title,c.sort_no,c.content_markdown,c.duration_minutes FROM course_chapter c JOIN course co ON co.id=c.course_id WHERE c.course_id=?" + visibility + " ORDER BY c.sort_no,c.id", (rs, row) -> {
             int minutes = rs.getInt("duration_minutes");
             return new LearningDtos.ChapterView(rs.getLong("id"),rs.getLong("course_id"),rs.getString("title"),rs.getInt("sort_no"),rs.getString("content_markdown"),minutes,requiredSeconds(minutes),List.of());
@@ -66,7 +68,8 @@ public class LearningRepository {
         return updated;
     }
     public long enrollment(long courseId, long userId) {
-        jdbc.update("INSERT INTO course_enrollment(course_id,user_id) SELECT ?,? WHERE EXISTS(SELECT 1 FROM course WHERE id=? AND status='PUBLISHED') ON DUPLICATE KEY UPDATE id=LAST_INSERT_ID(id)",courseId,userId,courseId);
+        revisions.ensurePublished(courseId);
+        jdbc.update("INSERT INTO course_enrollment(course_id,user_id,revision_id) SELECT ?,?,c.published_revision_id FROM course c WHERE c.id=? AND c.status='PUBLISHED' ON DUPLICATE KEY UPDATE course_enrollment.id=LAST_INSERT_ID(course_enrollment.id)",courseId,userId,courseId);
         Long id=jdbc.queryForObject("SELECT id FROM course_enrollment WHERE course_id=? AND user_id=?",Long.class,courseId,userId);
         if(id==null) throw new ApiException(HttpStatus.NOT_FOUND,"COURSE_NOT_FOUND","课程不存在或尚未发布"); return id;
     }
@@ -74,7 +77,9 @@ public class LearningRepository {
     public LearningDtos.CourseDetail detail(long courseId,long userId,boolean publishedOnly){
         CourseDtos.CourseView course;
         try { course = jdbc.queryForObject("SELECT * FROM course WHERE id=?" + (publishedOnly?" AND status='PUBLISHED'":""), CourseRepository::map, courseId); } catch (Exception e) { throw new ApiException(HttpStatus.NOT_FOUND,"COURSE_NOT_FOUND","课程不存在或尚未发布"); }
-        List<LearningDtos.ChapterView> list=chapters(courseId,publishedOnly); Optional<Long> enrollment=findEnrollment(courseId,userId);
+        var pinned = publishedOnly ? revisions.forEmployee(courseId,userId) : null;
+        List<LearningDtos.ChapterView> list=pinned!=null ? pinned.chapters() : chapters(courseId,publishedOnly); Optional<Long> enrollment=findEnrollment(courseId,userId);
+        if (pinned!=null) course = pinned.course();
         int percent=0,completed=0; if(enrollment.isPresent()){ Integer p=jdbc.queryForObject("SELECT progress_percent FROM course_enrollment WHERE id=?",Integer.class,enrollment.get());Integer c=jdbc.queryForObject("SELECT completed_chapters FROM course_enrollment WHERE id=?",Integer.class,enrollment.get());percent=p==null?0:p;completed=c==null?0:c; }
         return new LearningDtos.CourseDetail(course,list,percent,completed,enrollment.isPresent());
     }

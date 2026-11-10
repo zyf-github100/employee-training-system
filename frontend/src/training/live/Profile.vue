@@ -68,6 +68,8 @@
           >{{ currentUser?.employeeNo }} · {{ currentUser?.departmentName || '未分配部门' }}</p
         ></div
       ><button class="outline-button" :disabled="loading" @click="load">重新读取资料</button></div
+    ><div v-if="currentUser?.mustChangePassword" class="toast" role="alert"
+      >首次登录必须先修改密码，修改成功后才能继续使用培训功能。</div
     ><div v-if="error" class="api-alert" role="alert">{{ error }}</div
     ><div v-if="notice" class="toast" role="status">{{ notice }}</div
     ><div class="profile-grid"

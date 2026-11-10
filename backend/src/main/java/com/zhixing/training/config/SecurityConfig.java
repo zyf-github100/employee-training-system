@@ -92,6 +92,7 @@ public class SecurityConfig {
                     .authenticationEntryPoint((req,res,ex) -> errors.write(res,401,"SESSION_EXPIRED","登录已过期，请重新登录")))
                 .headers(h -> h.frameOptions(f -> f.deny()));
         http.addFilterBefore(new com.zhixing.training.audit.AdminAuditFilter(audit), org.springframework.security.web.csrf.CsrfFilter.class);
+        http.addFilterAfter(new com.zhixing.training.auth.MustChangePasswordFilter(users, errors), BearerTokenAuthenticationFilter.class);
         return http.build();
     }
 

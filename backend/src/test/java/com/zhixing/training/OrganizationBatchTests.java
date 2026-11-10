@@ -81,6 +81,18 @@ class OrganizationBatchTests {
         assertThatThrownBy(()->batch.transfer(root,altered)).isInstanceOfSatisfying(ApiException.class,e->assertThat(e.code()).isEqualTo("BATCH_REQUEST_CONFLICT"));
         assertThatThrownBy(()->batch.transfer(manager,request)).isInstanceOf(ApiException.class);
     }
+    @Test void batchHistoryStoresSnapshotsAndRollbackRefusesStaleTargets() {
+        var request=transfer(child,one);batch.transfer(root,request);
+        var page=batch.history(root,1,20,"TRANSFER");assertThat(page.total()).isGreaterThanOrEqualTo(1);
+        var current=page.list().stream().filter(item->item.requestId().equals(request.requestId())).findFirst().orElseThrow();
+        assertThat(current.before()).hasSize(1);assertThat(current.after()).hasSize(1);
+        var rolled=batch.rollback(root,request.requestId(),new RollbackRequest("恢复原部门"));
+        assertThat(rolled.rolledBackAt()).isNotNull();assertThat(org.employee(root,one).departmentId()).isEqualTo(a);
+        assertThat(batch.rollback(root,request.requestId(),new RollbackRequest("重复恢复")).rolledBackAt()).isEqualTo(rolled.rolledBackAt());
+        var second=transfer(child,one);batch.transfer(root,second);
+        jdbc.update("UPDATE sys_user SET job_title='Changed elsewhere',version=version+1 WHERE id=?",one);
+        assertThatThrownBy(()->batch.rollback(root,second.requestId(),new RollbackRequest("过期恢复"))).isInstanceOfSatisfying(ApiException.class,e->assertThat(e.code()).isEqualTo("ROLLBACK_CONFLICT"));
+    }
     @Test void concurrentRetryCommitsOneBatchAndOneVersionIncrement() throws Exception {
         var request=transfer(child,one,two);var pool=Executors.newFixedThreadPool(2);var start=new CountDownLatch(1);
         try {
@@ -119,6 +131,15 @@ class OrganizationBatchTests {
         mvc.perform(get("/api/v1/me").header("Authorization","Bearer "+newer.response().accessToken())).andExpect(status().isUnauthorized());
         var token=setup.issue(root,two,org.employee(root,two).version());batch.transfer(root,transfer(child,two));
         assertThatThrownBy(()->setup.complete(new AccountSetupService.CompleteRequest(token.employeeNo(),token.token(),"Changed@123"))).isInstanceOf(ApiException.class);
+    }
+    @Test void firstLoginMustChangePasswordBeforeBusinessApis() throws Exception {
+        String no="FIRST"+tag; jdbc.update("INSERT INTO sys_user(employee_no,password_hash,name,must_change_password) VALUES(?,?,?,TRUE)",no,hash,"First login");
+        var issued=auth.login(no,"BatchTest@123","test","127.0.0.1");assertThat(issued.response().user().mustChangePassword()).isTrue();
+        mvc.perform(get("/api/v1/employee/courses").header("Authorization","Bearer "+issued.response().accessToken())).andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value("PASSWORD_CHANGE_REQUIRED"));
+        mvc.perform(get("/api/v1/me").header("Authorization","Bearer "+issued.response().accessToken())).andExpect(status().isOk()).andExpect(jsonPath("$.data.mustChangePassword").value(true));
+        mvc.perform(put("/api/v1/me/password").with(csrf()).header("Authorization","Bearer "+issued.response().accessToken()).contentType("application/json").content("{\"currentPassword\":\"BatchTest@123\",\"newPassword\":\"Changed@123\"}"))
+                .andExpect(status().isOk());
+        var next=auth.login(no,"Changed@123","test","127.0.0.1");assertThat(next.response().user().mustChangePassword()).isFalse();
     }
     @Test void leadershipIsScopedVersionedAndDoesNotGrantPermissions() {
         denied(()->org.setLeader(manager,a,new LeaderRequest(one,0)));

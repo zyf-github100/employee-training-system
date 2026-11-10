@@ -11,7 +11,9 @@
     type AuditEntry,
     type DataScope,
     type SetupLink,
-    type BatchResult
+    type BatchResult,
+    type InvitationDelivery,
+    type BatchHistory
   } from './api'
 
   import EmployeeImportPanel from './EmployeeImportPanel.vue'
@@ -26,7 +28,7 @@
   const departments = ref<Department[]>([])
   const employees = ref<Employee[]>([])
   const logs = ref<AuditEntry[]>([])
-  const tab = ref<'employees' | 'departments' | 'imports' | 'audit'>('employees')
+  const tab = ref<'employees' | 'departments' | 'imports' | 'audit' | 'history'>('employees')
   const busy = ref(false)
   const error = ref('')
   const notice = ref('')
@@ -39,7 +41,9 @@
     auditTotal = ref(0)
   const filters = reactive({ keyword: '', department: '', status: '', role: '' })
   const outcome = ref('')
+  const history = ref<BatchHistory[]>([]), historyTotal = ref(0), historyPage = ref(1)
   const setupLink = ref<SetupLink | null>(null)
+  const invitation = ref<InvitationDelivery | null>(null)
   const setupPanel = ref<HTMLElement | null>(null)
   const setupUrl = computed(() =>
     setupLink.value
@@ -226,6 +230,12 @@
   async function switchTab(value: typeof tab.value) {
     tab.value = value
     if (value === 'audit') await run(loadLogs)
+    if (value === 'history') await run(loadHistory)
+  }
+  async function loadHistory() { const result = await api.batchHistory(historyPage.value); history.value = result.list; historyTotal.value = result.total }
+  async function rollback(item: BatchHistory) {
+    if (item.rolledBackAt || !window.confirm('确认回滚这次批量变更？系统会检查目标账号版本，发现后续改动则整批拒绝。')) return
+    await run(async () => { await api.rollbackBatch(item.requestId, '管理员回滚'); await loadHistory(); await loadEmployees(); notice.value = '批量变更已回滚' })
   }
   function editEmployee(e?: Employee) {
     employeeId.value = e?.id ?? null
@@ -298,6 +308,20 @@
       notice.value = '链接已复制，请单独交付给对应员工。'
     })
   }
+  async function deliverInvitation(e: Employee, channel: 'EMAIL' | 'SMS') {
+    await run(async () => {
+      invitation.value = await api.deliverInvitation(e.id, e.version, channel)
+      setupLink.value = {
+        userId: invitation.value.userId,
+        employeeNo: invitation.value.employeeNo,
+        token: invitation.value.setupToken ?? '',
+        purpose: e.activated ? 'RESET' : 'ACTIVATE',
+        expiresAt: invitation.value.expiresAt
+      }
+      await loadEmployees()
+      notice.value = `${channel === 'EMAIL' ? '邮件' : '短信'}邀请（模拟）已进入投递队列：${invitation.value.destination}`
+    })
+  }
   watch(
     () => employeeForm.roleCode,
     (role) => {
@@ -365,6 +389,11 @@
         :disabled="busy || batchBusy"
         @click="switchTab('audit')"
         >操作审计</button
+       ><button
+         :class="{ selected: tab === 'history' }"
+         :disabled="busy || batchBusy"
+         @click="switchTab('history')"
+         >批量变更历史</button
       ></div
     >
     <p v-if="error" ref="errorAlert" class="org-error" role="alert" tabindex="-1">{{ error }}</p
@@ -491,6 +520,18 @@
               :disabled="busy || batchBusy"
               @click="issueLink(e)"
               >{{ e.activated ? '重置密码' : '生成激活链接' }}</button
+             ><button
+               v-if="canEdit(e) && e.id !== currentUser?.id && e.status === 'ACTIVE' && e.email"
+               class="text-button"
+               :disabled="busy || batchBusy"
+               @click="deliverInvitation(e, 'EMAIL')"
+               >发邮件邀请</button
+             ><button
+               v-if="canEdit(e) && e.id !== currentUser?.id && e.status === 'ACTIVE' && e.phone"
+               class="text-button"
+               :disabled="busy || batchBusy"
+               @click="deliverInvitation(e, 'SMS')"
+               >发短信邀请</button
             ><span v-if="e.id === currentUser?.id" class="muted">当前账号</span></div
           ></article
         ></div
@@ -598,6 +639,12 @@
           >停用、取消激活、调岗或修改权限后，原登录会话立即失效。至少保留一个启用的超级管理员。</p
         ><button class="primary-button" :disabled="busy || batchBusy">保存员工</button></form
       >
+    </template>
+    <template v-else-if="tab === 'history'">
+      <div class="panel"><div class="panel-heading"><h2>批量调岗 / 角色变更</h2><button class="text-button" @click="loadHistory">刷新</button></div>
+        <article v-for="item in history" :key="item.requestId" class="admin-paper-question"><div class="org-person-top"><div><strong>{{ item.operation === 'TRANSFER' ? '批量调岗' : '批量角色变更' }}</strong><small>{{ new Date(item.createdAt).toLocaleString('zh-CN') }} · {{ item.result.changed }} 人发生变更</small></div><button class="outline-button" :disabled="busy || !!item.rolledBackAt" @click="rollback(item)">{{ item.rolledBackAt ? '已回滚' : '回滚' }}</button></div><p class="muted">请求 {{ item.requestId }} · 前后快照 {{ item.before.length }} / {{ item.after.length }} 人</p></article>
+        <p v-if="!history.length" class="empty-state">暂无批量变更记录。</p>
+      </div>
     </template>
     <EmployeeImportPanel v-else-if="tab === 'imports'" @imported="run(loadEmployees)" />
     <template v-else-if="tab === 'departments'">

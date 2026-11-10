@@ -13,14 +13,15 @@ import java.sql.Statement;
 @Repository
 public class CourseRepository {
     private final JdbcTemplate jdbc;
-    public CourseRepository(JdbcTemplate jdbc) { this.jdbc=jdbc; }
+    private final CourseVersionService revisions;
+    public CourseRepository(JdbcTemplate jdbc,CourseVersionService revisions) { this.jdbc=jdbc;this.revisions=revisions; }
     public static CourseDtos.CourseView map(java.sql.ResultSet rs, int row) throws java.sql.SQLException {
         Timestamp published = rs.getTimestamp("published_at");
         return new CourseDtos.CourseView(rs.getLong("id"),rs.getString("title"),rs.getString("summary"),rs.getString("cover_url"),rs.getString("category"),rs.getString("difficulty"),rs.getString("status"),rs.getInt("duration_minutes"),rs.getInt("chapter_count"),published==null?null:published.toInstant(),rs.getLong("version"));
     }
     public List<CourseDtos.CourseView> published(int pageNo, int pageSize, String keyword) {
         int offset=(pageNo-1)*pageSize; String q=keyword==null?"":"%"+keyword.trim()+"%";
-        return jdbc.query("SELECT * FROM course WHERE status='PUBLISHED' AND (?='' OR title LIKE ? OR summary LIKE ?) ORDER BY updated_at DESC LIMIT ? OFFSET ?", CourseRepository::map, q, q, q, pageSize, offset);
+        return jdbc.query("SELECT * FROM course WHERE status='PUBLISHED' AND (?='' OR title LIKE ? OR summary LIKE ?) ORDER BY updated_at DESC LIMIT ? OFFSET ?", CourseRepository::map, q, q, q, pageSize, offset).stream().map(revisions::publishedCourse).toList();
     }
     public long publishedCount(String keyword) { String q=keyword==null?"":"%"+keyword.trim()+"%"; Long n=jdbc.queryForObject("SELECT COUNT(*) FROM course WHERE status='PUBLISHED' AND (?='' OR title LIKE ? OR summary LIKE ?)",Long.class,q,q,q); return n==null?0:n; }
     public List<CourseDtos.CourseView> all(int pageNo,int pageSize,String keyword) { int offset=(pageNo-1)*pageSize;String q=keyword==null?"":"%"+keyword.trim()+"%";return jdbc.query("SELECT * FROM course WHERE (?='' OR title LIKE ? OR summary LIKE ?) ORDER BY updated_at DESC LIMIT ? OFFSET ?",CourseRepository::map,q,q,q,pageSize,offset); }

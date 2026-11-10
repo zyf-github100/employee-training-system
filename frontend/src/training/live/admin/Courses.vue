@@ -94,7 +94,8 @@
     }
     saving.value = true
     try {
-      await api.updateCourse(course.id, { ...course, status: publish ? 'PUBLISHED' : 'DRAFT' })
+      if (publish) await api.publishCourse(course.id, course.version, '管理员发布')
+      else await api.updateCourse(course.id, { ...course, status: 'DRAFT' })
       await load()
       ElMessage.success(publish ? '课程已发布' : '已转为草稿')
     } catch (e) {

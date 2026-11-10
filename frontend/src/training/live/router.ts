@@ -137,6 +137,8 @@ router.beforeEach(async (to) => {
     return currentUser.value.roleCode === 'ADMIN' ? '/admin/dashboard' : '/dashboard'
   if (!currentUser.value && to.path !== '/login')
     return { path: '/login', query: { next: to.fullPath } }
+  if (currentUser.value?.mustChangePassword && !['/profile', '/login'].includes(to.path))
+    return { path: currentUser.value.roleCode === 'ADMIN' ? '/admin/profile' : '/profile', query: { force: '1' } }
   if (to.meta.admin && currentUser.value?.roleCode !== 'ADMIN') return '/dashboard'
   if (currentUser.value && to.path === '/login')
     return currentUser.value.roleCode === 'ADMIN' ? '/admin/dashboard' : '/dashboard'

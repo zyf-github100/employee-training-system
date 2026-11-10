@@ -32,7 +32,9 @@
     options: '正确\n错误',
     answer: '0',
     category: '安全合规',
-    difficulty: '基础'
+    difficulty: '基础',
+    referenceAnswer: '',
+    gradingGuide: ''
   })
   const examForm = reactive({
     title: '新员工阶段测评',
@@ -42,11 +44,14 @@
     deadline: ''
   })
   const answers = reactive<Record<number, number[]>>({})
+  const textAnswers = reactive<Record<number, string>>({})
   let saveTimer: number | undefined
   let countdownTimer: number | undefined
+  let integrityTimer: number | undefined
   let inFlight: Promise<void> | null = null
   let deadline = 0
   let disposed = false
+  const integritySession = typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`
 
   function apiMessage(e: unknown) {
     error.value = e instanceof ApiError ? e.message : '考试接口暂时不可用，请确认后端已启动'
@@ -83,11 +88,11 @@
     }
   }
   async function createQuestion() {
-    const options = questionForm.options
+    const options = questionForm.type === 'subjective' ? [] : questionForm.options
       .split('\n')
       .map((item) => item.trim())
       .filter(Boolean)
-    const answer = questionForm.answer
+    const answer = questionForm.type === 'subjective' ? [] : questionForm.answer
       .split(',')
       .map((item) => Number(item.trim()))
       .filter(Number.isInteger)
@@ -102,6 +107,8 @@
         analysis: '',
         category: questionForm.category,
         difficulty: questionForm.difficulty,
+        referenceAnswer: questionForm.referenceAnswer,
+        gradingGuide: questionForm.gradingGuide,
         status: 'ENABLED',
         version: 0
       })
@@ -181,16 +188,30 @@
     Object.keys(answers).forEach((key) => {
       delete answers[Number(key)]
     })
+    Object.keys(textAnswers).forEach((key) => {
+      delete textAnswers[Number(key)]
+    })
     value.questions.forEach((question) => {
       answers[question.id] = value.answers?.[question.id] ?? []
+      textAnswers[question.id] = value.textAnswers?.[question.id] ?? ''
     })
     startCountdown()
+    void reportIntegrity('ATTEMPT_RESTORED')
+  }
+  async function reportIntegrity(eventType: string, metadata: Record<string, unknown> = {}) {
+    if (props.admin || !attempt.value || attempt.value.attempt.status === 'SUBMITTED') return
+    try {
+      await api.recordIntegrityEvent(attempt.value.attempt.id, eventType, { ...metadata, sessionId: integritySession })
+    } catch {
+      // Integrity telemetry must never prevent a learner from saving or submitting.
+    }
   }
   function answerPayload() {
     return (
       attempt.value?.questions.map((question) => ({
         paperQuestionId: question.id,
-        answer: answers[question.id] ?? []
+        answer: answers[question.id] ?? [],
+        ...(question.type === 'subjective' ? { text: textAnswers[question.id] ?? '' } : {})
       })) ?? []
     )
   }
@@ -335,6 +356,8 @@
       attempt.value.remainingSeconds = Math.max(0, Math.ceil((deadline - Date.now()) / 1000))
       if (attempt.value.remainingSeconds === 0) void submit(true)
     }, 1000)
+    if (integrityTimer) window.clearInterval(integrityTimer)
+    integrityTimer = window.setInterval(() => void reportIntegrity('HEARTBEAT'), 15000)
   }
   const router = inject(routerKey, undefined)
   if (router)
@@ -353,15 +376,27 @@
       event.returnValue = ''
     }
   }
+  function onVisibilityChange() {
+    void reportIntegrity(document.visibilityState === 'visible' ? 'VISIBILITY_VISIBLE' : 'VISIBILITY_HIDDEN')
+  }
+  function onWindowBlur() { void reportIntegrity('FOCUS_LOST') }
+  function onWindowFocus() { void reportIntegrity('FOCUS_GAINED') }
   onMounted(() => {
     void load()
     window.addEventListener('beforeunload', beforeUnload)
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('blur', onWindowBlur)
+    window.addEventListener('focus', onWindowFocus)
   })
   onBeforeUnmount(() => {
     disposed = true
     window.removeEventListener('beforeunload', beforeUnload)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+    window.removeEventListener('blur', onWindowBlur)
+    window.removeEventListener('focus', onWindowFocus)
     if (saveTimer) window.clearTimeout(saveTimer)
     if (countdownTimer) window.clearInterval(countdownTimer)
+    if (integrityTimer) window.clearInterval(integrityTimer)
   })
 </script>
 
@@ -406,7 +441,8 @@
               >题型<select v-model="questionForm.type"
                 ><option value="single">单选</option
                 ><option value="multiple">多选</option
-                ><option value="boolean">判断</option></select
+                ><option value="boolean">判断</option
+                ><option value="subjective">主观题</option></select
               ></label
             ><label
               >题干<input v-model="questionForm.stem" required placeholder="请输入题干" /></label
@@ -414,12 +450,18 @@
               >选项（每行一个）<textarea
                 v-model="questionForm.options"
                 rows="4"
-                required
+                :required="questionForm.type !== 'subjective'"
+                :disabled="questionForm.type === 'subjective'"
               ></textarea></label
             ><label
               >答案索引（从 0 开始，多选用逗号）<input
                 v-model="questionForm.answer"
-                required /></label
+                :required="questionForm.type !== 'subjective'"
+                :disabled="questionForm.type === 'subjective'" /></label
+            ><template v-if="questionForm.type === 'subjective'"
+              ><label>参考答案<textarea v-model="questionForm.referenceAnswer" rows="3" required /></label
+              ><label>评分标准<textarea v-model="questionForm.gradingGuide" rows="3" required /></label
+            ></template
             ><button class="primary-button compact" :disabled="loading">保存题目</button></form
           ></div
         >
@@ -501,12 +543,20 @@
                     : '答案已保存'
             }}</small></div
           ></div
-        ><article
+          ><article
           v-for="(question, number) in attempt.questions"
           :key="question.id"
           class="taking-question"
           ><b>{{ number + 1 }}. {{ question.stem }}（{{ question.points }} 分）</b
-          ><label v-for="(option, index) in question.options" :key="option" class="option-line"
+          ><textarea
+            v-if="question.type === 'subjective'"
+            v-model="textAnswers[question.id]"
+            class="subjective-answer"
+            :disabled="attempt.attempt.status === 'SUBMITTED' || submitting || loading"
+            placeholder="请输入你的答案"
+            rows="6"
+            @input="revision++ ; scheduleSave()"
+          /><label v-for="(option, index) in question.options" v-else :key="option" class="option-line"
             ><input
               :type="question.type === 'multiple' ? 'checkbox' : 'radio'"
               :name="`q-${question.id}`"

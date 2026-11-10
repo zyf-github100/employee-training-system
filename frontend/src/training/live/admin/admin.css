@@ -806,3 +806,8 @@
     min-height: 240px;
   }
 }
+.admin-review-queue { margin: 18px 0; }
+.admin-review-row { display:flex; justify-content:space-between; align-items:center; gap:16px; padding:12px 0; border-top:1px solid #e2ece8; }
+.admin-review-row small { display:block; color:#71847f; margin-top:4px; }
+.admin-review-events { max-height:360px; overflow:auto; border:1px solid #e2ece8; border-radius:8px; padding:8px 14px; }
+.admin-review-events p { padding:8px 0; margin:0; border-bottom:1px solid #edf3f1; }

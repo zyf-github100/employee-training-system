@@ -98,6 +98,7 @@ public class OrganizationService {
             validatePassword(b.initialPassword());String hash=passwords.encode(b.initialPassword());var key=new GeneratedKeyHolder();
             jdbc.update(c->{var p=c.prepareStatement("INSERT INTO sys_user(employee_no,password_hash,name,department_id) VALUES(?,?,?,?)",Statement.RETURN_GENERATED_KEYS);p.setString(1,no);p.setString(2,hash);p.setString(3,b.name().trim());p.setLong(4,b.departmentId());return p;},key);
             id=key.getKey().longValue();
+            jdbc.update("UPDATE sys_user SET must_change_password=TRUE,password_changed_at=NULL WHERE id=?", id);
         }
         jdbc.update("UPDATE sys_user SET name=?,department_id=?,job_title=?,email=?,phone=?,role_code=?,super_admin=?,data_scope=?,status=?,activated=?,version=version+1,updated_at=CURRENT_TIMESTAMP WHERE id=?",b.name().trim(),b.departmentId(),b.jobTitle(),b.email(),b.phone(),b.roleCode(),b.superAdmin(),b.dataScope(),b.status(),b.activated(),id);
         clearInvalidLeadership(id);

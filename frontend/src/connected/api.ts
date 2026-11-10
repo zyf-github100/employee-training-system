@@ -10,6 +10,7 @@ export type User = {
   email?: string
   phone?: string
   roleCode: Role
+  mustChangePassword?: boolean
   version: number
 }
 export type Department = {
@@ -83,6 +84,17 @@ export type SetupLink = {
   purpose: string
   expiresAt: string
 }
+export type InvitationDelivery = {
+  deliveryId: number
+  userId: number
+  employeeNo: string
+  channel: 'EMAIL' | 'SMS'
+  destination: string
+  status: string
+  setupToken?: string
+  expiresAt: string
+  createdAt: string
+}
 export type BatchTarget = { id: number; version: number }
 export type BatchResult = {
   requestId: string
@@ -90,6 +102,7 @@ export type BatchResult = {
   changed: number
   clearedLeaders: number
 }
+export type BatchHistory = { requestId: string; actorId: number; operation: 'TRANSFER' | 'ROLES'; createdAt: string; result: BatchResult; before: Employee[]; after: Employee[]; rolledBackAt?: string; rollbackResult?: string }
 export type TransferRequest = {
   requestId: string
   targets: BatchTarget[]
@@ -130,6 +143,7 @@ export type Course = {
   publishedAt?: string
   version: number
 }
+export type CourseRevision = { id: number; revisionNo: number; releaseNote: string; createdAt: string; createdBy?: number; current: boolean; snapshot: CourseDetail }
 export type Resource = {
   id: number
   chapterId: number
@@ -160,6 +174,37 @@ export type CourseDetail = {
   completedChapters: number
   enrolled: boolean
 }
+export type CourseReview = {
+  id: number
+  courseId: number
+  userId: number
+  employeeNo: string
+  authorName: string
+  rating: number
+  content?: string
+  createdAt: string
+  updatedAt: string
+  version: number
+}
+export type CourseReviewSummary = {
+  averageRating: number
+  reviewCount: number
+  mine?: CourseReview
+  reviews: CourseReview[]
+}
+export type CourseDiscussion = {
+  id: number
+  courseId: number
+  userId: number
+  employeeNo: string
+  authorName: string
+  parentId?: number
+  content: string
+  status: 'VISIBLE' | 'HIDDEN'
+  createdAt: string
+  updatedAt: string
+  version: number
+}
 export type Progress = {
   chapterId: number
   progressPercent: number
@@ -172,7 +217,7 @@ export type Progress = {
 }
 export type BankQuestion = {
   id: number
-  type: 'single' | 'multiple' | 'boolean'
+  type: 'single' | 'multiple' | 'boolean' | 'subjective'
   stem: string
   options: string[]
   answer: number[]
@@ -181,6 +226,8 @@ export type BankQuestion = {
   difficulty: string
   status: string
   version: number
+  referenceAnswer?: string
+  gradingGuide?: string
 }
 export type Exam = {
   id: number
@@ -203,6 +250,8 @@ export type PaperQuestion = {
   options: string[]
   points: number
   analysis?: string
+  referenceAnswer?: string
+  gradingGuide?: string
 }
 export type ExamDetail = { exam: Exam; questions: PaperQuestion[] }
 export type Attempt = {
@@ -220,7 +269,31 @@ export type AttemptDetail = {
   questions: PaperQuestion[]
   remainingSeconds: number
   answers: Record<number, number[]>
+  textAnswers?: Record<number, string>
 }
+export type RandomRule = {
+  type: BankQuestion['type']
+  category?: string
+  difficulty?: string
+  count: number
+  pointsEach: number
+}
+export type ImportResult = {
+  requestId: string
+  imported: number
+  rejected: number
+  rows: Array<{ rowNumber: number; status: string; message: string; questionId: number }>
+}
+export type GradingQuestion = {
+  question: PaperQuestion
+  answerText?: string
+  score?: number
+  comment?: string
+  version: number
+}
+export type GradingView = { attempt: Attempt; questions: GradingQuestion[] }
+export type IntegrityEvent = { id: number; sequenceNo: number; eventType: string; clientAt?: string; serverAt: string; metadata?: string }
+export type IntegrityView = { attemptId: number; status: 'CLEAR' | 'REVIEW' | 'DISMISSED'; events: IntegrityEvent[] }
 export type TrainingPlan = {
   id: number
   title: string
@@ -613,6 +686,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ version })
     }),
+  deliverInvitation: (id: number, version: number, channel: 'EMAIL' | 'SMS') =>
+    raw<InvitationDelivery>(`/api/v1/admin/employees/${id}/invitations?version=${version}`, {
+      method: 'POST',
+      body: JSON.stringify({ channel })
+    }),
   completeAccountSetup: (employeeNo: string, token: string, newPassword: string) =>
     raw<void>(
       '/api/v1/auth/account-setup',
@@ -636,6 +714,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(body)
     }),
+  batchHistory: (pageNo = 1, operation = '') => raw<Page<BatchHistory>>(`/api/v1/admin/employees/batch/history?pageNo=${pageNo}&pageSize=20&operation=${encodeURIComponent(operation)}`),
+  rollbackBatch: (requestId: string, reason = '') => raw<BatchHistory>(`/api/v1/admin/employees/batch/${requestId}/rollback`, { method: 'POST', body: JSON.stringify({ reason }) }),
   saveDepartment: (id: number | null, body: object) =>
     raw<number>(`/api/v1/admin/departments${id ? `/${id}` : ''}`, {
       method: id ? 'PUT' : 'POST',
@@ -704,6 +784,32 @@ export const api = {
     }),
   courseProgress: (courseId: number) =>
     raw<Progress[]>(`/api/v1/employee/courses/${courseId}/progress`),
+  courseReviews: (courseId: number) =>
+    raw<CourseReviewSummary>(`/api/v1/employee/courses/${courseId}/reviews`),
+  saveCourseReview: (courseId: number, body: { rating: number; content?: string; version: number }) =>
+    raw<CourseReview>(`/api/v1/employee/courses/${courseId}/reviews`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    }),
+  publishCourse: (id: number, version: number, releaseNote: string) =>
+    raw<CourseRevision>(`/api/v1/admin/courses/${id}/publish`, { method: 'POST', body: JSON.stringify({ version, releaseNote }) }),
+  courseRevisions: (id: number) => raw<CourseRevision[]>(`/api/v1/admin/courses/${id}/revisions`),
+  restoreCourseRevision: (id: number, revision: number, version: number) =>
+    raw<void>(`/api/v1/admin/courses/${id}/revisions/${revision}/restore`, { method: 'POST', body: JSON.stringify({ version }) }),
+  courseDiscussions: (courseId: number) =>
+    raw<CourseDiscussion[]>(`/api/v1/employee/courses/${courseId}/discussions`),
+  createCourseDiscussion: (courseId: number, content: string, parentId?: number) =>
+    raw<CourseDiscussion>(`/api/v1/employee/courses/${courseId}/discussions`, {
+      method: 'POST',
+      body: JSON.stringify({ content, parentId: parentId ?? null })
+    }),
+  adminCourseDiscussions: (courseId: number) =>
+    raw<CourseDiscussion[]>(`/api/v1/admin/courses/${courseId}/discussions`),
+  setCourseDiscussionStatus: (id: number, status: 'VISIBLE' | 'HIDDEN', version: number) =>
+    raw<CourseDiscussion>(`/api/v1/admin/course-discussions/${id}/status`, {
+      method: 'PUT',
+      body: JSON.stringify({ status, version })
+    }),
   saveProgress: (
     courseId: number,
     chapterId: number,
@@ -749,7 +855,7 @@ export const api = {
     raw<ExamDetail>(`/api/v1/admin/exams/${id}/publish`, { method: 'POST', body: '{}' }),
   beginExam: (id: number) =>
     raw<AttemptDetail>(`/api/v1/employee/exams/${id}/attempts`, { method: 'POST', body: '{}' }),
-  submitAttempt: (id: number, answers: Array<{ paperQuestionId: number; answer: number[] }>) =>
+  submitAttempt: (id: number, answers: Array<{ paperQuestionId: number; answer: number[]; text?: string }>) =>
     raw<Attempt>(`/api/v1/employee/exam-attempts/${id}/submit`, {
       method: 'POST',
       body: JSON.stringify({ answers })
@@ -757,10 +863,29 @@ export const api = {
   attemptDetail: (id: number) => raw<AttemptDetail>(`/api/v1/employee/exam-attempts/${id}`),
   activeAttempts: () => raw<Attempt[]>('/api/v1/employee/exam-attempts/active'),
   myAttempts: () => raw<Attempt[]>('/api/v1/employee/exam-attempts'),
-  saveAttemptAnswers: (id: number, answers: Array<{ paperQuestionId: number; answer: number[] }>) =>
+  saveAttemptAnswers: (id: number, answers: Array<{ paperQuestionId: number; answer: number[]; text?: string }>) =>
     raw<AttemptDetail>(`/api/v1/employee/exam-attempts/${id}/answers`, {
       method: 'PUT',
       body: JSON.stringify({ answers })
+    }),
+  createRandomExam: (body: object) =>
+    raw<ExamDetail>('/api/v1/admin/exams/random', { method: 'POST', body: JSON.stringify(body) }),
+  importQuestions: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return raw<ImportResult>('/api/v1/admin/questions/import', { method: 'POST', body })
+  },
+  gradingAttempt: (id: number) => raw<GradingView>(`/api/v1/admin/exam-attempts/${id}/grading`),
+  submittedAttempts: () => raw<Attempt[]>('/api/v1/admin/exam-attempts'),
+  examIntegrity: (id: number) => raw<IntegrityView>(`/api/v1/admin/exam-attempts/${id}/integrity`),
+  setExamIntegrity: (id: number, status: 'CLEAR' | 'REVIEW' | 'DISMISSED', reason: string) =>
+    raw<IntegrityView>(`/api/v1/admin/exam-attempts/${id}/integrity`, { method: 'PUT', body: JSON.stringify({ status, reason }) }),
+  gradeAttempt: (id: number, items: Array<{ paperQuestionId: number; score: number; comment?: string; version: number }>) =>
+    raw<GradingView>(`/api/v1/admin/exam-attempts/${id}/grading`, { method: 'PUT', body: JSON.stringify({ items }) }),
+  recordIntegrityEvent: (id: number, eventType: string, metadata?: object) =>
+    raw(`/api/v1/employee/exam-attempts/${id}/integrity-events`, {
+      method: 'POST',
+      body: JSON.stringify({ eventType, clientAt: new Date().toISOString(), metadata: JSON.stringify(metadata ?? {}) })
     }),
   plans: (admin = false) => raw<TrainingPlan[]>(`/api/v1/${admin ? 'admin' : 'employee'}/plans`),
   planDetail: (id: number, admin = false) =>

@@ -20,4 +20,16 @@ public class OrganizationBatchController {
     public ApiResponse<Result> roles(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody RoleRequest body) {
         return ApiResponse.ok(service.roles(Long.parseLong(jwt.getSubject()), body));
     }
+    @GetMapping("/history")
+    public ApiResponse<com.zhixing.training.api.PageResult<HistoryView>> history(@AuthenticationPrincipal Jwt jwt,
+                                                                                  @RequestParam(defaultValue="1") int pageNo,
+                                                                                  @RequestParam(defaultValue="20") int pageSize,
+                                                                                  @RequestParam(defaultValue="") String operation) {
+        return ApiResponse.ok(service.history(Long.parseLong(jwt.getSubject()), pageNo, pageSize, operation));
+    }
+    @PostMapping("/{requestId}/rollback")
+    public ApiResponse<HistoryView> rollback(@AuthenticationPrincipal Jwt jwt, @PathVariable String requestId,
+                                             @Valid @RequestBody RollbackRequest body) {
+        return ApiResponse.ok(service.rollback(Long.parseLong(jwt.getSubject()), requestId, body));
+    }
 }

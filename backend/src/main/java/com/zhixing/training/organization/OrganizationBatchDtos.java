@@ -2,6 +2,7 @@ package com.zhixing.training.organization;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
+import java.time.Instant;
 import java.util.List;
 
 public final class OrganizationBatchDtos {
@@ -20,4 +21,8 @@ public final class OrganizationBatchDtos {
             @NotBlank @Pattern(regexp="SELF|DEPARTMENT|DEPARTMENT_TREE|CUSTOM|ALL") String dataScope,
             @NotNull @Size(max=5000) List<@NotNull @Min(1) Long> customDepartmentIds) {}
     public record Result(String requestId, int requested, int changed, int clearedLeaders) {}
+    public record HistoryView(String requestId, long actorId, String operation, Instant createdAt,
+                              Result result, List<OrganizationDtos.Employee> before, List<OrganizationDtos.Employee> after,
+                              Instant rolledBackAt, String rollbackResult) {}
+    public record RollbackRequest(@Size(max=200) String reason) {}
 }
