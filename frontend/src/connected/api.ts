@@ -422,6 +422,13 @@ export type Announcement = {
   readCount: number
   version: number
 }
+export type ReportType = 'employees' | 'learning' | 'exams' | 'plans'
+export type ReportQuery = {
+  keyword?: string
+  departmentId?: number
+  from?: string
+  to?: string
+}
 export type PlatformSettings = {
   companyName: string
   contactName: string
@@ -512,19 +519,30 @@ async function raw<T>(path: string, init: RequestInit = {}, retry = true): Promi
   return result
 }
 
-async function binary(path: string, method: 'GET' | 'POST' = 'GET', retry = true): Promise<Blob> {
+async function binary(
+  path: string,
+  method: 'GET' | 'POST' = 'GET',
+  body?: object,
+  retry = true
+): Promise<Blob> {
   const generation = sessionGeneration
   if (mutating(method) && !csrfToken) await csrf()
   ensureSession(generation)
   const headers = new Headers({ Accept: '*/*' })
+  if (body !== undefined) headers.set('Content-Type', 'application/json')
   if (mutating(method)) headers.set('X-XSRF-TOKEN', csrfToken)
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`)
-  const response = await fetch(path, { method, headers, credentials: 'include' })
+  const response = await fetch(path, {
+    method,
+    headers,
+    credentials: 'include',
+    body: body === undefined ? undefined : JSON.stringify(body)
+  })
   ensureSession(generation)
   if (response.status === 401 && retry) {
     await refresh()
     ensureSession(generation)
-    return binary(path, method, false)
+    return binary(path, method, body, false)
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as Partial<Envelope<unknown>>
@@ -919,6 +937,8 @@ export const api = {
   adminEmployeeArchive: (id: number) =>
     raw<EmployeeArchive>(`/api/v1/admin/employees/${id}/archive`),
   analytics: () => raw<AnalyticsSummary>('/api/v1/admin/analytics'),
+  report: (type: ReportType, query: ReportQuery) =>
+    binary(`/api/v1/admin/reports/${type}`, 'POST', query),
   certificates: (admin = false) =>
     raw<Certificate[]>(`/api/v1/${admin ? 'admin' : 'employee'}/certificates`)
 }

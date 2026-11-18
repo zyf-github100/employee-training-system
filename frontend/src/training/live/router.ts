@@ -81,6 +81,11 @@ export const router = createRouter({
       meta: { title: '数据分析', admin: true }
     },
     {
+      path: '/admin/reports',
+      component: () => import('./admin/Reports.vue'),
+      meta: { title: '报表导出', admin: true }
+    },
+    {
       path: '/admin/certificates',
       component: () => import('../../connected/CertificatePanel.vue'),
       props: { admin: true },

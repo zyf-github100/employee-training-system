@@ -27,6 +27,7 @@
           { path: '/admin/employees', name: '组织与员工', icon: 'user' },
           { path: '/admin/archives', name: '培训档案', icon: 'medal' },
           { path: '/admin/analytics', name: '数据分析', icon: 'chart' },
+          { path: '/admin/reports', name: '报表导出', icon: 'download' },
           { path: '/admin/certificates', name: '证书管理', icon: 'medal' },
           { path: '/admin/feedback', name: '交流与反馈', icon: 'chat' },
           { path: '/admin/announcements', name: '公告管理', icon: 'bell' },

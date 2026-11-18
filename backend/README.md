@@ -1,3 +1,14 @@
+# 培训报表导出（2026-11-18）
+
+- `POST /api/v1/admin/reports/employees`：员工培训档案，每人一行，汇总课程完成、学时、考试、计划与证书。
+- `POST /api/v1/admin/reports/learning`：学习明细，章节级进度、服务端学习时长、完成时间。
+- `POST /api/v1/admin/reports/exams`：考试成绩，分数、通过、开始/交卷时间、完整性状态、阅卷状态。
+- `POST /api/v1/admin/reports/plans`：计划完成情况，任务状态、进度、完成时间和终止原因。
+- 请求体为 `{keyword?,departmentId?,from?,to?}`；日期只作用于 learning/exams/plans，员工档案为全量汇总。
+- 所有查询先按当前管理员数据范围过滤；单次最多 50,000 行；导出使用 POST 并进入管理审计（不记录正文）。
+- 返回 `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`，文件名带日期；工作簿含标题、导出时间、冻结表头、自动筛选和列宽。
+- 报表复用 V19/V21 的阅卷状态和完整性状态列，没有新增迁移；后端全套 106 项测试通过。
+
 # 培训计划生命周期（2026-11-09）
 
 - V17 增加 `training_plan.terminated_at`、`termination_reason`，状态新增 `TERMINATED`。
