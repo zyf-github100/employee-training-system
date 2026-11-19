@@ -1,34 +1,46 @@
 package com.zhixing.training.api;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
-import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
-import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.servlet.HandlerMapping;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class);
+    private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ApiResponse<Void>> api(ApiException ex) {
         return ResponseEntity.status(ex.status()).body(error(ex.code(), ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
-    ResponseEntity<ApiResponse<Map<String, String>>> validation(MethodArgumentNotValidException ex) {
+    ResponseEntity<ApiResponse<Map<String, String>>> validation(MethodArgumentNotValidException ex, HttpServletRequest request) {
         Map<String, String> fields = new LinkedHashMap<>();
-        for (FieldError field : ex.getBindingResult().getFieldErrors()) fields.putIfAbsent(field.getField(), field.getDefaultMessage());
-        return ResponseEntity.badRequest().body(new ApiResponse<>("VALIDATION_ERROR", "请求参数不合法", fields, UUID.randomUUID().toString(), Instant.now()));
+        var violations = new ArrayList<String>();
+        for (FieldError field : ex.getBindingResult().getFieldErrors()) {
+            fields.putIfAbsent(field.getField(), field.getDefaultMessage());
+            violations.add(field.getField() + "=" + field.getCode());
+        }
+        String traceId = UUID.randomUUID().toString();
+        // Field names, rule codes and the route template are safe to log without submitted values.
+        log.warn("API validation failed: traceId={} method={} route={} violations={}",
+                traceId, request.getMethod(), request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE), violations);
+        return ResponseEntity.badRequest().body(new ApiResponse<>("VALIDATION_ERROR", "请求参数不合法", fields, traceId, Instant.now()));
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
